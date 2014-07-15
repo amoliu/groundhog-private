@@ -983,6 +983,7 @@ class RecurrentLayer(Layer):
 
         self.update_values = []
         self.reset_values = []
+        self.hidden_values = []
 
     def store_update_values(self, op, values):
         self.update_values.append(values)
@@ -990,11 +991,16 @@ class RecurrentLayer(Layer):
     def store_reset_values(self, op, values):
         self.reset_values.append(values)
 
+    def store_hidden_values(self, op, values):
+        self.hidden_values.append(values)
+
     def job_done(self, *args):
         numpy.save("{}_updates.npy".format(self.name), numpy.asarray(self.update_values))
         numpy.save("{}_resets.npy".format(self.name), numpy.asarray(self.reset_values))
+        numpy.save("{}_hiddens.npy".format(self.name), numpy.asarray(self.hidden_values))
         self.update_values = []
         self.reset_values = []
+        self.hidden_values = []
 
     def _init_params(self):
         self.W_hh = theano.shared(
@@ -1104,6 +1110,7 @@ class RecurrentLayer(Layer):
                     gater_below)
             gater = dbg_hook(self.store_update_values, gater)
             h = gater * h + (1-gater) * state_before
+        h = dbg_hook(self.store_hidden_values, h)
 
         if self.activ_noise and use_noise:
             h = h + self.trng.normal(h.shape, avg=0, std=self.activ_noise, dtype=h.dtype)
