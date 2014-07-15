@@ -17,6 +17,7 @@ import theano.tensor as TT
 # Nicer interface of scan
 from theano.sandbox.scan import scan
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from theano.printing import Print
 
 from groundhog import utils
 from groundhog.utils import sample_weights, \
@@ -25,6 +26,13 @@ from groundhog.utils import sample_weights, \
         init_bias, \
         constant_shape
 from basic import Layer
+
+def dbg_hook(hook, x):
+    if not isinstance(x, TT.TensorVariable):
+        x.out = theano.printing.Print(global_fn=hook)(x.out)
+        return x
+    else:
+        return theano.printing.Print(global_fn=hook)(x)
 
 class RecurrentMultiLayer(Layer):
     """
@@ -973,6 +981,21 @@ class RecurrentLayer(Layer):
         self.params = []
         self._init_params()
 
+        self.update_values = []
+        self.reset_values = []
+
+    def store_update_values(self, op, values):
+        self.update_values.append(values)
+
+    def store_reset_values(self, op, values):
+        self.reset_values.append(values)
+
+    def job_done(self, *args):
+        numpy.save("{}_updates.npy".format(self.name), numpy.asarray(self.update_values))
+        numpy.save("{}_resets.npy".format(self.name), numpy.asarray(self.reset_values))
+        self.update_values = []
+        self.reset_values = []
+
     def _init_params(self):
         self.W_hh = theano.shared(
                 self.init_fn(self.n_hids,
@@ -1065,6 +1088,7 @@ class RecurrentLayer(Layer):
         if self.reseting and reseter_below:
             reseter = self.reseter_activation(TT.dot(state_before, R_hh) +
                     reseter_below)
+            reseter = dbg_hook(self.store_reset_values, reseter)
             reseted_state_before = reseter * state_before
         else:
             reseted_state_before = state_before
@@ -1078,6 +1102,7 @@ class RecurrentLayer(Layer):
         if self.gating and gater_below:
             gater = self.gater_activation(TT.dot(state_before, G_hh) +
                     gater_below)
+            gater = dbg_hook(self.store_update_values, gater)
             h = gater * h + (1-gater) * state_before
 
         if self.activ_noise and use_noise:
@@ -1183,6 +1208,8 @@ class RecurrentLayer(Layer):
         self.out = rval
         self.rval = rval
         self.updates =updates
+
+        self.out = dbg_hook(self.job_done, self.out)
 
         return self.out
 
