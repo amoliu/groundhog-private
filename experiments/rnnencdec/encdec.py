@@ -17,8 +17,10 @@ from groundhog.layers import\
         Shift,\
         LastState,\
         DropOp
+from groundhog.basics import Model
 from groundhog.models import LM_Model
 from groundhog.datasets import PytablesBitextIterator
+from groundhog.utils import utils
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +178,7 @@ def get_batch_iterator(state, rng):
             return batch
 
     train_data = Iterator(
-        batch_size=int(state['bs']),
+        from groundhog.basics import Modelbatch_size=int(state['bs']),
         target_file=state['target'][0],
         source_file=state['source'][0],
         can_fit=False,
@@ -826,12 +828,16 @@ class RNNEncoderDecoder(object):
         self.state = state
         self.rng = rng
 
-    def build(self):
-        logger.debug("Create input variables")
-        self.x = TT.lmatrix('x')
-        self.x_mask = TT.matrix('x_mask')
-        self.y = TT.lmatrix('y')
-        self.y_mask = TT.matrix('y_mask')
+    def build(self, variables=None):
+        if variables:
+            self.x, self.x_mask, self.y, self.y_mask = variables
+        else:
+            logger.debug("Create input variables")
+            self.x = TT.lmatrix('x')
+            self.x_mask = TT.matrix('x_mask')
+            self.y = TT.lmatrix('y')
+            self.y_mask = TT.matrix('y_mask')
+
         self.inputs = [self.x, self.y, self.x_mask, self.y_mask]
 
         logger.debug("Create encoder")
@@ -955,6 +961,39 @@ class RNNEncoderDecoder(object):
             return self.probs_fn(x[:, None], y[:, None],
                     x_mask[:, None], y_mask[:, None])
         return probs_computer
+
+class BidirectionalTranslationModel(Model):
+
+    def __init__(self, rng,
+            forward_lm_model, backward_lm_model, joint_cost_layer):
+
+        Model.__init__(
+                output_layer=joint_cost_layer,
+                indx_word=None, indx_word_src=None,
+                rng=rng)
+
+        self.forward_lm_model = forward_lm_model
+        self.backward_lm_model = backward_lm_model
+        self.joint_cost_layer = joint_cost_layer
+
+
+
+class BidirectionalRNNEncoderDecoder(object):
+
+    def __init__(self, state, rng):
+        self.state = state
+        self.rng = rng
+        self.forward_rnned = RNNEncoderDecoder(state, rng)
+        self.backward_rnned = RNNEncoderDecoder(state, rng)
+
+    def build(self):
+        self.forward_rnned.build()
+        self.backward_rnned.build(self.forward_rnned.inputs)
+
+        self.cost_layer = utils.copy(self.forward_rnned.predictions)
+        self.cost_layer.merge_params(self.backward_rnned.predictions)
+        self.cost_layer.cost += self.backward_rnned.cost
+
 
 def parse_input(state, word2idx, line, raise_unk=False, idx2word=None):
     seqin = line.split()
