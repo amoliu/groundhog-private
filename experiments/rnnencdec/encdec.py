@@ -178,7 +178,7 @@ def get_batch_iterator(state, rng):
             return batch
 
     train_data = Iterator(
-        from groundhog.basics import Modelbatch_size=int(state['bs']),
+        batch_size=int(state['bs']),
         target_file=state['target'][0],
         source_file=state['source'][0],
         can_fit=False,
