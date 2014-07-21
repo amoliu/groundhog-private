@@ -244,12 +244,15 @@ class Maxout(object):
             x = x.max(2)
         return x
 
-def _prefix(p, s):
-    return '%s_%s'%(p, s)
+def _prefix(state,p, s):
+    if '%s_%s'%(p,s) in state:
+        return state['%s_%s'%(p, s)]
+    return state[s]
 
 class EncoderDecoderBase(object):
 
     def _create_embedding_layers(self, prefix):
+        logger.debug("_create_embedding_layers")
         self.approx_embedder = MultiLayer(
             self.rng,
             n_in=self.state['n_sym_source']
@@ -277,13 +280,13 @@ class EncoderDecoderBase(object):
                 self.rng,
                 name='{}_input_embdr_{}'.format(prefix, level),
                 **embedder_kwargs)
-            if self.state[_prefix(prefix,'rec_gating')]:
+            if _prefix(self.state,prefix,'rec_gating'):
                 self.update_embedders[level] = MultiLayer(
                     self.rng,
                     learn_bias=False,
                     name='{}_update_embdr_{}'.format(prefix, level),
                     **embedder_kwargs)
-            if self.state[_prefix(prefix,'rec_reseting')]:
+            if _prefix(self.state,prefix,'rec_reseting'):
                 self.reset_embedders[level] =  MultiLayer(
                     self.rng,
                     learn_bias=False,
@@ -291,6 +294,7 @@ class EncoderDecoderBase(object):
                     **embedder_kwargs)
 
     def _create_inter_level_layers(self, prefix):
+        logger.debug("_create_inter_level_layers")
         inter_level_kwargs = dict(self.default_kwargs)
         inter_level_kwargs.update(
                 n_in=self.state['dim'],
@@ -304,39 +308,43 @@ class EncoderDecoderBase(object):
             self.inputers[level] = MultiLayer(self.rng,
                     name="{}_inputer_{}".format(prefix, level),
                     **inter_level_kwargs)
-            if self.state[_prefix(prefix,'rec_reseting')]:
+            if _prefix(self.state,prefix,'rec_reseting'):
                 self.reseters[level] = MultiLayer(self.rng,
                     name="{}_reseter_{}".format(prefix, level),
                     **inter_level_kwargs)
-            if self.state[_prefix(prefix,'rec_gating')]:
+            if _prefix(self.state,prefix,'rec_gating'):
                 self.updaters[level] = MultiLayer(self.rng,
                     name="{}_updater_{}".format(prefix, level),
                     **inter_level_kwargs)
 
     def _create_transition_layers(self, prefix):
+        logger.debug("_create_transition_layers")
         self.transitions = []
         for level in range(self.num_levels):
-            self.transitions.append(eval(self.state[_prefix(prefix,'rec_layer')])(
+            self.transitions.append(eval(_prefix(self.state,prefix,'rec_layer'))(
                     self.rng,
                     n_hids=self.state['dim'],
-                    activation=self.state['activ'],
+                    activation=_prefix(self.state,prefix,'activ'),
                     bias_scale=self.state['bias'],
-                    scale=self.state['rec_weight_scale'],
-                    init_fn=self.state['rec_weight_init_fn'],
+                    init_fn=(self.state['rec_weight_init_fn']
+                        if not self.skip_init
+                        else "sample_zeros"),
+                    scale=_prefix(self.state,prefix,'rec_weight_scale'),
                     weight_noise=self.state['weight_noise_rec'],
                     dropout=self.state['dropout_rec'],
-                    gating=self.state[_prefix(prefix,'rec_gating')],
-                    gater_activation=self.state[_prefix(prefix,'rec_gater')],
-                    reseting=self.state[_prefix(prefix,'rec_reseting')],
-                    reseter_activation=self.state[_prefix(prefix,'rec_reseter')],
+                    gating=_prefix(self.state,prefix,'rec_gating'),
+                    gater_activation=_prefix(self.state,prefix,'rec_gater'),
+                    reseting=_prefix(self.state,prefix,'rec_reseting'),
+                    reseter_activation=_prefix(self.state,prefix,'rec_reseter'),
                     profile=self.state['profile'],
                     name='{}_transition_{}'.format(prefix, level)))
 
 class Encoder(EncoderDecoderBase):
 
-    def __init__(self, state, rng):
+    def __init__(self, state, rng, skip_init=False):
         self.state = state
         self.rng = rng
+        self.skip_init = skip_init
 
         self.num_levels = self.state['encoder_stack']
 
@@ -344,7 +352,7 @@ class Encoder(EncoderDecoderBase):
         """ Create all elements of Encoder's computation graph"""
 
         self.default_kwargs = dict(
-            init_fn=self.state['weight_init_fn'],
+            init_fn=self.state['weight_init_fn'] if not self.skip_init else "sample_zeros",
             weight_noise=self.state['weight_noise'],
             scale=self.state['weight_scale'])
 
@@ -354,6 +362,7 @@ class Encoder(EncoderDecoderBase):
         self._create_representation_layers()
 
     def _create_representation_layers(self):
+        logger.debug("_create_representation_layers")
         # If we have a stack of RNN, then their last hidden states
         # are combined with a maxout layer.
         self.repr_contributors = [None] * self.num_levels
@@ -464,9 +473,10 @@ class Decoder(EncoderDecoderBase):
     SAMPLING = 1
     BEAM_SEARCH = 2
 
-    def __init__(self, state, rng):
+    def __init__(self, state, rng, skip_init=False):
         self.state = state
         self.rng = rng
+        self.skip_init = skip_init
 
         self.num_levels = self.state['decoder_stack']
 
@@ -474,7 +484,7 @@ class Decoder(EncoderDecoderBase):
         """ Create all elements of Decoder's computation graph"""
 
         self.default_kwargs = dict(
-            init_fn=self.state['weight_init_fn'],
+            init_fn=self.state['weight_init_fn'] if not self.skip_init else "sample_zeros",
             weight_noise=self.state['weight_noise'],
             scale=self.state['weight_scale'])
 
@@ -486,6 +496,7 @@ class Decoder(EncoderDecoderBase):
         self._create_readout_layers()
 
     def _create_initialization_layers(self):
+        logger.debug("_create_initialization_layers")
         self.initializers = [lambda x : None] * self.num_levels
         if self.state['bias_code']:
             for level in range(self.num_levels):
@@ -493,12 +504,13 @@ class Decoder(EncoderDecoderBase):
                     self.rng,
                     n_in=self.state['dim'],
                     n_hids=[self.state['dim']],
-                    activation=[self.state['activ']],
+                    activation=[_prefix(self.state,'dec','activ')],
                     bias_scale=[self.state['bias']],
                     name='dec_initializer_%d'%level,
                     **self.default_kwargs)
 
     def _create_decoding_layers(self):
+        logger.debug("_create_decoding_layers")
         self.decode_inputers = [lambda x : 0] * self.num_levels
         self.decode_reseters = [lambda x : 0] * self.num_levels
         self.decode_updaters = [lambda x : 0] * self.num_levels
@@ -513,13 +525,13 @@ class Decoder(EncoderDecoderBase):
                 name='dec_dec_inputter_{}'.format(level),
                 learn_bias=False,
                 **decoding_kwargs)
-            if self.state[_prefix('dec','rec_gating')]:
+            if _prefix(self.state,'dec','rec_gating'):
                 self.decode_updaters[level] = MultiLayer(
                     self.rng,
                     name='dec_dec_updater_{}'.format(level),
                     learn_bias=False,
                     **decoding_kwargs)
-            if self.state[_prefix('dec','rec_reseting')]:
+            if _prefix(self.state,'dec','rec_reseting'):
                 self.decode_reseters[level] = MultiLayer(
                     self.rng,
                     name='dec_dec_reseter_{}'.format(level),
@@ -527,6 +539,7 @@ class Decoder(EncoderDecoderBase):
                     **decoding_kwargs)
 
     def _create_readout_layers(self):
+        logger.debug("_create_readout_layers")
         self.repr_readout = MultiLayer(
                 self.rng,
                 n_in=self.state['dim'],
@@ -824,9 +837,10 @@ class Decoder(EncoderDecoderBase):
 
 class RNNEncoderDecoder(object):
 
-    def __init__(self, state, rng):
+    def __init__(self, state, rng, skip_init=False):
         self.state = state
         self.rng = rng
+        self.skip_init = skip_init
 
     def build(self, variables=None):
         if variables:
@@ -841,13 +855,13 @@ class RNNEncoderDecoder(object):
         self.inputs = [self.x, self.y, self.x_mask, self.y_mask]
 
         logger.debug("Create encoder")
-        self.encoder = Encoder(self.state, self.rng)
+        self.encoder = Encoder(self.state, self.rng, self.skip_init)
         self.encoder.create_layers()
         logger.debug("Build encoding computation graph")
         training_c = self.encoder.build_encoder(self.x, self.x_mask, use_noise=True)
 
         logger.debug("Create decoder")
-        self.decoder = Decoder(self.state, self.rng)
+        self.decoder = Decoder(self.state, self.rng, self.skip_init)
         self.decoder.create_layers()
         logger.debug("Build log-likelihood computation graph")
         self.predictions = self.decoder.build_decoder(training_c, self.y, self.y_mask)

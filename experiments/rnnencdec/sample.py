@@ -4,6 +4,8 @@ import argparse
 import cPickle
 import traceback
 import logging
+import time
+import sys
 
 import numpy
 
@@ -11,6 +13,17 @@ import experiments.rnnencdec
 from experiments.rnnencdec import RNNEncoderDecoder, parse_input
 
 logger = logging.getLogger(__name__)
+
+class Timer(object):
+
+    def __init__(self):
+        self.total = 0
+
+    def start(self):
+        self.start_time = time.time()
+
+    def finish(self):
+        self.total += time.time() - self.start_time
 
 class BeamSearch(object):
 
@@ -45,39 +58,40 @@ class BeamSearch(object):
             last_words = (numpy.array(map(lambda t : t[-1], trans))
                     if k > 0
                     else numpy.zeros(beam_size, dtype="int64"))
-            probs = self.comp_next_probs(c, last_words, *states)[0]
+            log_probs = numpy.log(self.comp_next_probs(c, last_words, *states)[0])
+
+            # Adjust log probs according to search restrictions
             if ignore_unk:
-                probs[:,self.unk_id] = -numpy.inf
+                log_probs[:,self.unk_id] = -numpy.inf
             if k < minlen:
-                probs[:,self.eos_id] = -numpy.inf
+                log_probs[:,self.eos_id] = -numpy.inf
 
-            n_choices = beam_size * n_samples
-            choices = numpy.zeros((n_choices, 2), dtype="int64")
-            choice_costs = numpy.zeros(n_choices)
+            # Find the best options by calling argpartition of flatten array
+            next_costs = numpy.array(costs)[:, None] - log_probs
+            flat_next_costs = next_costs.flatten()
+            best_costs_indices = numpy.argpartition(
+                    flat_next_costs.flatten(),
+                    n_samples)[:n_samples]
 
-            for i in range(beam_size):
-                best_words = numpy.argsort(probs[i])[-n_samples:]
-                rrange = slice(n_samples * i, n_samples * (i + 1))
-                choices[rrange, 0] = i
-                choices[rrange, 1] = best_words
-                choice_costs[rrange] =\
-                        costs[i] - numpy.log(probs[i, best_words])
-
-            best_choices = numpy.argsort(choice_costs)[:n_samples]
+            # Decypher flatten indices
+            voc_size = log_probs.shape[1]
+            trans_indices = best_costs_indices / voc_size
+            word_indices = best_costs_indices % voc_size
+            costs = flat_next_costs[best_costs_indices]
 
             new_trans = [[]] * n_samples
             new_costs = numpy.zeros(n_samples)
             new_states = [numpy.zeros((n_samples, c.shape[0]), dtype="float32") for level
                     in range(num_levels)]
             inputs = numpy.zeros(n_samples, dtype="int64")
-            for i, j in enumerate(best_choices):
-                orig_idx = choices[j, 0]
-                next_word = choices[j, 1]
+            for i, (orig_idx, next_word, next_cost) in enumerate(
+                    zip(trans_indices, word_indices, costs)):
                 new_trans[i] = trans[orig_idx] + [next_word]
-                new_costs[i] = choice_costs[j]
+                new_costs[i] = next_cost
                 for level in range(num_levels):
                     new_states[level][i] = states[level][orig_idx]
                 inputs[i] = next_word
+
             new_states = self.comp_next_states(c, inputs, *new_states)
 
             trans = []
@@ -156,7 +170,10 @@ def parse_args():
     parser.add_argument("--beam-search", help="Beam size, turns on beam-search", type=int)
     parser.add_argument("--source", help="File of source sentences", default="")
     parser.add_argument("--trans", help="File to save translations in", default="")
-    parser.add_argument("--normalize", help="Normalize log-prob with the word count", action="store_true", default=False)
+    parser.add_argument("--normalize", help="Normalize log-prob with the word count",
+        action="store_true", default=False)
+    parser.add_argument("--verbose", action="store_true",
+        default=False, help="Be verbose")
     parser.add_argument("model_path", help="Path to the model")
     parser.add_argument("changes",  nargs="?", help="Changes to state", default="")
     return parser.parse_args()
@@ -173,7 +190,7 @@ def main():
     logging.basicConfig(level=getattr(logging, state['level']), format="%(asctime)s: %(name)s: %(levelname)s: %(message)s")
 
     rng = numpy.random.RandomState(state['seed'])
-    enc_dec = RNNEncoderDecoder(state, rng)
+    enc_dec = RNNEncoderDecoder(state, rng, skip_init=True)
     enc_dec.build()
     lm_model = enc_dec.create_lm_model()
     lm_model.load(args.model_path)
@@ -196,21 +213,28 @@ def main():
         fsrc = open(args.source, 'r')
         ftrans = open(args.trans, 'w')
 
+        start_time = time.time()
+
         n_samples = args.beam_search
         total_cost = 0.0
         logging.debug("Beam size: {}".format(n_samples))
-        for line in fsrc:
+        for i, line in enumerate(fsrc):
             seqin = line.strip()
             seq,parsed_in = parse_input(state, indx_word, seqin, idx2word=idict_src)
-            print "Parsed Input:", parsed_in
+            if args.verbose:
+                print "Parsed Input:", parsed_in
             trans, costs = sample(lm_model, seq, n_samples, sampler=sampler,
                     beam_search=beam_search, normalize=args.normalize)
             best = numpy.argmin(costs)
             print >>ftrans, trans[best]
-            print "Translation:", trans[best]
+            if args.verbose:
+                print "Translation:", trans[best]
             total_cost += costs[best]
+            if i % 100 == 0:
+                sys.stdout.flush()
+                logger.debug("Current speed is {} per sentence".
+                        format((time.time() - start_time) / i))
         print "Total cost of the translations: {}".format(total_cost)
-
 
         fsrc.close()
         ftrans.close()
