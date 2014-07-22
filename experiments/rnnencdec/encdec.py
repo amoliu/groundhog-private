@@ -264,6 +264,7 @@ class EncoderDecoderBase(object):
             n_hids=[self.state['rank_n_approx']],
             activation=[self.state['rank_n_activ']],
             name='{}_approx_embdr'.format(prefix),
+            force_cpu=(prefix == "enc"),
             **self.default_kwargs)
 
         # We have 3 embeddings for each word in each level,

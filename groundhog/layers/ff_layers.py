@@ -45,7 +45,8 @@ class MultiLayer(Layer):
                  bias_scale = 0.,
                  learn_bias = True,
                  grad_scale = 1.,
-                 name=None):
+                 name=None,
+                 force_cpu=False):
         """
         :type rng: numpy random generator
         :param rng: numpy random generator
@@ -171,6 +172,7 @@ class MultiLayer(Layer):
         self.dropout = dropout
         self.n_hids = n_hids
         self.learn_bias = learn_bias
+        self.force_cpu = force_cpu
         self._init_params()
 
     def _init_params(self):
@@ -178,6 +180,8 @@ class MultiLayer(Layer):
         Initialize the parameters of the layer, either by using sparse initialization or small
         isotropic noise.
         """
+        shared = theano.shared if not self.force_cpu else TT._shared
+
         self.W_ems = []
         self.b_ems = []
         if self.rank_n_approx:
@@ -191,9 +195,9 @@ class MultiLayer(Layer):
                                  self.sparsity[0],
                                  self.scale[0],
                                  self.rng)
-            self.W_em1 = theano.shared(W_em1,
+            self.W_em1 = shared(W_em1,
                                        name='W1_0_%s'%self.name)
-            self.W_em2 = theano.shared(W_em2,
+            self.W_em2 = shared(W_em2,
                                        name='W2_0_%s'%self.name)
             self.W_ems = [self.W_em1, self.W_em2]
 
@@ -203,11 +207,11 @@ class MultiLayer(Layer):
                                 self.sparsity[0],
                                 self.scale[0],
                                 self.rng)
-            self.W_em = theano.shared(W_em,
+            self.W_em = shared(W_em,
                                       name='W_0_%s'%self.name)
             self.W_ems = [self.W_em]
 
-        self.b_em = theano.shared(
+        self.b_em = shared(
             self.bias_fn[0](self.n_hids[0], self.bias_scale[0],self.rng),
             name='b_0_%s'%self.name)
         self.b_ems = [self.b_em]
@@ -218,11 +222,11 @@ class MultiLayer(Layer):
                                 self.sparsity[dx],
                                 self.scale[dx],
                                 self.rng)
-            W_em = theano.shared(W_em,
+            W_em = shared(W_em,
                                       name='W_%d_%s'%(dx,self.name))
             self.W_ems += [W_em]
 
-            b_em = theano.shared(
+            b_em = shared(
                 self.bias_fn[dx](self.n_hids[dx], self.bias_scale[dx],self.rng),
                 name='b_%d_%s'%(dx,self.name))
             self.b_ems += [b_em]
@@ -236,8 +240,8 @@ class MultiLayer(Layer):
                                                      self.b_ems][:-1]
         self.params_grad_scale = [self._grad_scale for x in self.params]
         if self.weight_noise:
-            self.nW_ems = [theano.shared(x.get_value()*0, name='noise_'+x.name) for x in self.W_ems]
-            self.nb_ems = [theano.shared(x.get_value()*0, name='noise_'+x.name) for x in self.b_ems]
+            self.nW_ems = [shared(x.get_value()*0, name='noise_'+x.name) for x in self.W_ems]
+            self.nb_ems = [shared(x.get_value()*0, name='noise_'+x.name) for x in self.b_ems]
 
             self.noise_params = [x for x in self.nW_ems] + [x for x in self.nb_ems]
             self.noise_params_shape_fn = [constant_shape(x.get_value().shape)

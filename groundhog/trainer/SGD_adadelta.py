@@ -55,18 +55,19 @@ class SGD(object):
         self.model = model
         self.rng = numpy.random.RandomState(state['seed'])
         srng = RandomStreams(self.rng.randint(213))
-        self.gs = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
-                                             dtype=theano.config.floatX),
-                                name=p.name)
-                   for p in model.params]
-        self.gnorm2 = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
-                                             dtype=theano.config.floatX),
-                                name=p.name+'_g2')
-                   for p in model.params]
-        self.dnorm2 = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
-                                             dtype=theano.config.floatX),
-                                name=p.name+'_d2')
-                   for p in model.params]
+        def shared_clone(p, name):
+            if str(p.__class__).find('cuda') >= 0:
+                func = theano.shared
+            else:
+                print "+++"
+                func = TT._shared
+            return func(
+                    numpy.zeros(p.get_value().shape,
+                        dtype=theano.config.floatX),
+                    name=p.name)
+        self.gs = [shared_clone(p, name=p.name + '_g') for p in model.params]
+        self.gnorm2 = [shared_clone(p, name=p.name + '_g2') for p in model.params]
+        self.dnorm2 = [shared_clone(p, name=p.name + '_d2') for p in model.params]
 
         self.step = 0
         self.bs = bs
@@ -130,8 +131,7 @@ class SGD(object):
         self.train_fn = theano.function(
             [], outs, name='train_function',
             updates = updates,
-            givens = zip(model.inputs, loc_data),
-            profile=self.state['profile'])
+            givens = zip(model.inputs, loc_data))
         logger.debug('took {}'.format(time.time() - st))
 
         self.lr = numpy.float32(1.)
@@ -149,8 +149,7 @@ class SGD(object):
         self.update_fn = theano.function(
             [], [], name='update_function',
             allow_input_downcast=True,
-            updates = updates,
-            profile=self.state['profile'])
+            updates = updates)
 
         self.old_cost = 1e20
         self.schedules = model.get_schedules()
