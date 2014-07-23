@@ -12,7 +12,7 @@ from groundhog.trainer.SGD import SGD as SGD
 from groundhog.trainer.SGD_momentum import SGD as SGD_momentum
 from groundhog.mainLoop import MainLoop
 from experiments.rnnencdec import\
-        RNNEncoderDecoder, prototype_state, get_batch_iterator
+        RNNEncoderDecoder, prototype_state, get_batch_iterator, SpecialTrainer
 import experiments.rnnencdec
 
 logger = logging.getLogger(__name__)
