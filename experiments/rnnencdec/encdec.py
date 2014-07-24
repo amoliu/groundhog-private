@@ -247,6 +247,11 @@ def _prefix(state,p, s):
         return state['%s_%s'%(p, s)]
     return state[s]
 
+class EmbeddingLayer(MultiLayer):
+
+    def __init__(self, rng, n_gpu_in, **kwargs):
+        MultiLayer.__init__(self, rng, **kwargs)
+
 class EncoderDecoderBase(object):
 
     def _create_embedding_layers(self, prefix):
