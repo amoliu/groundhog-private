@@ -59,7 +59,7 @@ class SpecialTrainer(object):
         self.model = model
         self.rng = numpy.random.RandomState(state['seed'])
 
-        # Hook -1: create big matrices
+        # Hook 0: create big matrices
         small_emb_matrix = model.small_emb_matrix
         big_emb_matrix = model.big_emb_matrix
         self.small_shape = small_emb_matrix.get_value().shape
@@ -69,7 +69,7 @@ class SpecialTrainer(object):
         big_dnorm2 = numpy.zeros(big_shape, dtype=floatX)
         self.reverse_map = numpy.zeros(big_shape[0], dtype="int64")
 
-        # Hook -0.5: exclude big matrix from gradient
+        # Hook 1: exclude big matrix from gradient
         params = filter(lambda p : p.name != big_emb_matrix.name, model.params)
 
         # Constructs shared variables
@@ -89,7 +89,7 @@ class SpecialTrainer(object):
                                                 dtype=x.dtype),
                                     name=x.name) for x in model.inputs]
 
-        # Hook 0
+        # Hook 2
         # remember the auxiliary matrices corresponding to the small one
         small_gs = filter(lambda p : p.name == small_emb_matrix.name,
                 self.gs)[0]
@@ -189,11 +189,9 @@ class SpecialTrainer(object):
         batch = self.data.next()
         assert batch
 
-        io_time = 0.0
-
-        before = time.time()
-        # Hook 1:
+        # Hook 3:
         # renumerate the words
+        g_st = time.time()
         flat_x = batch['x'].flatten()
         uniques = numpy.unique(flat_x)
         self.reverse_map[uniques] = numpy.arange(len(uniques))
@@ -201,8 +199,6 @@ class SpecialTrainer(object):
         # load the small matrices
         for small, big in self.small_big_pairs:
             small.set_value(big[uniques])
-        io_time += time.time() - before
-        logging.debug("IO time 1: {}".format(io_time))
 
         # Perturb the data (! and the model)
         if isinstance(batch, dict):
@@ -219,19 +215,15 @@ class SpecialTrainer(object):
             for gdata, data in zip(self.gdata, batch):
                 gdata.set_value(data, borrow=True)
         # Run the trianing function
-        g_st = time.time()
         rvals = self.train_fn()
         for schedule in self.schedules:
             schedule(self, rvals[-1])
         self.update_fn()
 
-        # Hook 2:
+        # Hook 4:
         # save the small matrix
-        before = time.time()
         for small, big in self.small_big_pairs:
             big[uniques] = small.get_value()
-        io_time += time.time() - before
-        logging.debug("IO time 2: {}".format(io_time))
 
         g_ed = time.time()
         self.state['lr'] = float(self.lr)
