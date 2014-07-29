@@ -40,6 +40,7 @@ class LM_Model(Model):
                   indx_word_src=None,
                   character_level = False,
                   exclude_params_for_norm=None,
+                  not_save_params=[],
                   rng = None):
         """
         Constructs a model, that respects the interface required by the
@@ -102,6 +103,7 @@ class LM_Model(Model):
                                        sample_fn=sample_fn,
                                        indx_word=indx_word,
                                        indx_word_src=indx_word_src,
+                                       not_save_params=not_save_params,
                                        rng=rng)
         if exclude_params_for_norm is None:
             self.exclude_params_for_norm = []
