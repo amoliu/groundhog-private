@@ -50,6 +50,7 @@ def prototype_state():
 
     state['rank_n_approx'] = 100
     state['rank_n_activ'] = 'lambda x: x'
+    state['force_enc_repr_cpu'] = False
 
     # Hidden layer configuration
     state['enc_rec_layer'] = 'RecurrentLayer'

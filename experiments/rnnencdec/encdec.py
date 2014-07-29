@@ -19,6 +19,9 @@ from groundhog.layers import\
         DropOp
 from groundhog.models import LM_Model
 from groundhog.datasets import PytablesBitextIterator
+from groundhog import utils
+
+floatX = theano.config.floatX
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +211,6 @@ def none_if_zero(x):
     return x
 
 def dbg_sum(text, x):
-    return x
     if not isinstance(x, TT.TensorVariable):
         x.out = theano.printing.Print(text, attrs=['sum'])(x.out)
         return x
@@ -216,7 +218,6 @@ def dbg_sum(text, x):
         return theano.printing.Print(text, attrs=['sum'])(x)
 
 def dbg_hook(hook, x):
-    return x
     if not isinstance(x, TT.TensorVariable):
         x.out = theano.printing.Print(global_fn=hook)(x.out)
         return x
@@ -247,25 +248,60 @@ def _prefix(state,p, s):
         return state['%s_%s'%(p, s)]
     return state[s]
 
-class EmbeddingLayer(MultiLayer):
+class EncoderEmbeddingLayer(MultiLayer):
 
-    def __init__(self, rng, n_gpu_in, **kwargs):
+    def __init__(self, rng, n_small_in, **kwargs):
         MultiLayer.__init__(self, rng, **kwargs)
+
+        self.W_small = theano.shared(
+                numpy.zeros((n_small_in, self.n_hids[0]), dtype=floatX),
+                name="W_small_{}".format(self.name))
+        self.params += [self.W_small]
+        self.params_grad_scale += [self._grad_scale]
+
+    def fprop(self, state_below,
+            use_noise=False, no_noise_bias=False, first_only=False,
+            use_small_vocab=False):
+        assert not use_noise
+        assert not no_noise_bias
+        assert not first_only
+
+        if use_small_vocab:
+            logger.debug("Use small vocabulary for {}".format(self.name))
+            embs = utils.dot(state_below, self.W_small) + self.b_em
+            self.out = embs
+            return embs
+        else:
+            logger.debug("Use large vocabulary for {}".format(self.name))
+            MultiLayer.fprop(self, state_below,
+                    use_noise=use_noise, no_noise_bias=no_noise_bias, first_only=first_only)
+            return self.out
+
 
 class EncoderDecoderBase(object):
 
     def _create_embedding_layers(self, prefix):
         logger.debug("_create_embedding_layers")
-        self.approx_embedder = MultiLayer(
+
+        n_in = self.state['n_sym_source']
+        force_cpu = False
+        approx_kwargs = dict(self.default_kwargs)
+        layer_class = MultiLayer
+        if prefix == "enc" and self.state['force_enc_repr_cpu']:
+            layer_class = EncoderEmbeddingLayer
+            force_cpu = True
+            approx_kwargs['n_small_in'] = self.state['bs'] * (self.state['seqlen'] + 1)
+        if prefix == "dec":
+            n_in = self.state['n_sym_target']
+
+        self.approx_embedder = layer_class(
             self.rng,
-            n_in=self.state['n_sym_source']
-                if prefix == "enc"
-                else self.state['n_sym_target'],
+            n_in=n_in,
             n_hids=[self.state['rank_n_approx']],
-            activation=[self.state['rank_n_activ']],
+            activation=[lambda x : x],
+            force_cpu=force_cpu,
             name='{}_approx_embdr'.format(prefix),
-            force_cpu=(prefix == "enc"),
-            **self.default_kwargs)
+            **approx_kwargs)
 
         # We have 3 embeddings for each word in each level,
         # the one used as input,
@@ -382,7 +418,7 @@ class Encoder(EncoderDecoderBase):
                 activation=eval(self.state['unary_activ']),
                 name="enc_repr_calc")
 
-    def build_encoder(self, x, x_mask, use_noise):
+    def build_encoder(self, x, x_mask, use_noise, use_small_vocab=False):
         """Create the computational graph of the RNN Encoder
 
         :param x: input variable, either vector of word indices or
@@ -393,6 +429,8 @@ class Encoder(EncoderDecoderBase):
         the matrix positions where the input actually is
 
         :param use_noise: turns on addition of noise to weights
+
+        :param use_small_vocab: use small word representation matrix
         """
 
         # Low rank embeddings of all the input words.
@@ -402,7 +440,13 @@ class Encoder(EncoderDecoderBase):
         # Here and later n_words = max_seq_len * batch_size.
         # Shape in case of vector input:
         #   (seq_len, rank_n_approx)
-        approx_embeddings = self.approx_embedder(x)
+        approx_kwargs = (dict(use_small_vocab=True)
+                if use_small_vocab
+                else dict())
+        approx_embeddings = self.approx_embedder(x, **approx_kwargs)
+        def embed_hook(op, x):
+            logger.debug("Approximate emdeddings: {}".format(x.sum(1)[:10]))
+        dbg_hook(embed_hook, approx_embeddings)
 
         # Low rank embeddings are projected to contribute
         # to input, reset and update signals.
@@ -421,7 +465,7 @@ class Encoder(EncoderDecoderBase):
             else:
                 values = x.sum()
             logger.debug("Input signal: {}".format(values))
-        input_signals[-1] = dbg_hook(inp_hook, input_signals[-1])
+        # input_signals[-1] = dbg_hook(inp_hook, input_signals[-1])
 
         # Hidden layers.
         # Shape in case of matrix input: (max_seq_len, batch_size, dim)
@@ -449,7 +493,7 @@ class Encoder(EncoderDecoderBase):
             else:
                 values = x.sum()
             logger.debug("Encoder hiddens: {}".format(values))
-        hidden_layers[-1] = dbg_hook(hid_hook, hidden_layers[-1])
+        #hidden_layers[-1] = dbg_hook(hid_hook, hidden_layers[-1])
 
         # If we no stack of RNN but only a usual one,
         # then the last hidden state is used as a representation.
@@ -602,7 +646,10 @@ class Decoder(EncoderDecoderBase):
                     **self.default_kwargs)
 
     def build_decoder(self, c, y, y_mask=None,
-            mode=EVALUATION, given_init_states=None, T=1):
+            mode=EVALUATION,
+            given_init_states=None,
+            ignore_grads=[],
+            T=1):
         """Create the computational graph of the RNN Decoder
 
         :param c: a representation produced by an encoder. Either (dim,)
@@ -641,7 +688,7 @@ class Decoder(EncoderDecoderBase):
         #   (max_seq_len, batch_size, dim)
         # Shape if mode != evaluation
         #   (n_samples, dim)
-        c = dbg_hook(lambda _, x : logger.debug("Representation: {}".format(x.sum())), c)
+        # c = dbg_hook(lambda _, x : logger.debug("Representation: {}".format(x.sum())), c)
         replicated_c = ReplicateLayer(y.shape[0])(c)
 
         # Low rank embeddings of all the input words.
@@ -713,7 +760,7 @@ class Decoder(EncoderDecoderBase):
                 else:
                     values = x.sum()
                 logger.debug("Decoder hiddens: {}".format(values))
-            hidden_layers[-1] = dbg_hook(hid_hook, hidden_layers[-1])
+            #hidden_layers[-1] = dbg_hook(hid_hook, hidden_layers[-1])
 
         # In hidden_layers we do no have the initial state, but we need it.
         # Instead of it we have the last one, which we do not need.
@@ -766,7 +813,7 @@ class Decoder(EncoderDecoderBase):
             else:
                 values = x.sum()
             logger.debug("Readouts: {}".format(values))
-        readout = dbg_hook(readout_hook, readout)
+        #readout = dbg_hook(readout_hook, readout)
 
         if mode == Decoder.SAMPLING:
             sample = self.output_layer.get_sample(
@@ -789,7 +836,8 @@ class Decoder(EncoderDecoderBase):
                     state_below=readout,
                     target=y,
                     mask=y_mask,
-                    reg=None)
+                    reg=None,
+                    ignore_grads=ignore_grads)
 
     def sampling_step(self, *args):
         """Implements one step of sapling
@@ -802,7 +850,7 @@ class Decoder(EncoderDecoderBase):
         assert prev_word.ndim == 1
         # skip the previous word log probability
         assert next(args).ndim == 1
-        prev_hidden_states = [dbg_sum("PrevHidden:", next(args)) for k in range(self.num_levels)]
+        prev_hidden_states = [next(args) for k in range(self.num_levels)]
         assert prev_hidden_states[0].ndim == 2
         c = next(args)
         assert c.ndim == 1
@@ -841,10 +889,10 @@ class Decoder(EncoderDecoderBase):
 
 class RNNEncoderDecoder(object):
 
-    def __init__(self, state, rng, skip_init=False):
-        self.state = state
-        self.rng = rng
-        self.skip_init = skip_init
+    def __init__(self, state, rng,  skip_init=False, training_noise=False):
+        args = dict(locals())
+        args.pop('self')
+        self.__dict__.update(args)
 
     def build(self):
         logger.debug("Create input variables")
@@ -858,13 +906,18 @@ class RNNEncoderDecoder(object):
         self.encoder = Encoder(self.state, self.rng, self.skip_init)
         self.encoder.create_layers()
         logger.debug("Build encoding computation graph")
-        training_c = self.encoder.build_encoder(self.x, self.x_mask, use_noise=True)
+        training_c = self.encoder.build_encoder(self.x, self.x_mask,
+                use_noise=self.training_noise,
+                use_small_vocab=self.state['force_enc_repr_cpu'])
 
         logger.debug("Create decoder")
         self.decoder = Decoder(self.state, self.rng, self.skip_init)
         self.decoder.create_layers()
         logger.debug("Build log-likelihood computation graph")
-        self.predictions = self.decoder.build_decoder(training_c, self.y, self.y_mask)
+        self.predictions = self.decoder.build_decoder(training_c, self.y, self.y_mask,
+                ignore_grads=[self.encoder.approx_embedder.W_em.name]
+                    if self.state['force_enc_repr_cpu']
+                    else [])
 
         logger.debug("Build sampling computation graph")
         self.sampling_x = TT.lvector("sampling_x")
@@ -885,16 +938,26 @@ class RNNEncoderDecoder(object):
     def create_lm_model(self):
         if hasattr(self, 'lm_model'):
             return self.lm_model
+        add_kwargs = dict()
+        if self.state['force_enc_repr_cpu']:
+            add_kwargs['not_save_params'] = self.encoder.approx_embedder.W_small.name
         self.lm_model = LM_Model(
             cost_layer=self.predictions,
             sample_fn=self.create_sampler(),
             weight_noise_amount=self.state['weight_noise_amount'],
             indx_word=self.state['indx_word_target'],
             indx_word_src=self.state['indx_word'],
-            rng=self.rng)
+            rng=self.rng,
+            **add_kwargs)
         self.lm_model.load_dict()
+        if self.state['force_enc_repr_cpu']:
+            self.lm_model.small_emb_matrix = self.encoder.approx_embedder.W_small
+            self.lm_model.big_emb_matrix = self.encoder.approx_embedder.W_em
         logger.debug("Model params:\n{}".format(
-            pprint.pformat([p.name for p in self.lm_model.params])))
+            pprint.pformat([
+                "{}: {}, {}".format(p.name, p.get_value().shape, p.type)
+                    for p in self.lm_model.params
+                ])))
         return self.lm_model
 
     def create_representation_computer(self):
