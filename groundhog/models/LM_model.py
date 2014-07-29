@@ -136,8 +136,8 @@ class LM_Model(Model):
                 self.exclude_params_for_norm))
         new_properties = [
                 ('grad_norm', grad_norm),
-                ('cost2_p_word', self.train_cost / num_words / scale),
-                ('cost2_p_expl', self.cost_layer.cost_per_sample.mean() / scale)]
+                ('log2_p_word', self.train_cost / num_words / scale),
+                ('log2_p_expl', self.cost_layer.cost_per_sample.mean() / scale)]
         self.properties += new_properties
         logger.debug("LM_model properties: {}".format(self.properties))
 
