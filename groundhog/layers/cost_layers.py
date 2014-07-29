@@ -309,6 +309,7 @@ class CostLayer(Layer):
                   reg=None,
                   scale=None,
                   additional_gradients=None,
+                  ignore_grads=[],
                   sum_over_time=None,
                   use_noise=True,
                   additional_inputs=None,
@@ -349,6 +350,10 @@ class CostLayer(Layer):
             expression that should be added to the gradient resulting from the
             cost. Not all parameters need to have an additional gradient.
 
+        :type ignore_grads: list of strs
+        :param ignore_grads: do not calculate gradients with respect to
+            these parameters (given by names)
+
         :type sum_over_time: bool or None
         :param sum_over_time: this flag overwrites the value given to this
             property in the constructor of the class
@@ -370,7 +375,14 @@ class CostLayer(Layer):
                              use_noise=use_noise,
                              additional_inputs=additional_inputs,
                              no_noise_bias=no_noise_bias)
-        grads = TT.grad(cost.mean(), self.params)
+
+        # Main part - take gradients
+        with_respect = filter(
+                lambda p : not p.name in ignore_grads,
+                self.params)
+        grads = TT.grad(cost.mean(), with_respect)
+
+        # Additional gradients stuff
         if additional_gradients:
             for p, gp in additional_gradients:
                 if p in self.params:
@@ -409,7 +421,6 @@ class CostLayer(Layer):
         """
 
         raise NotImplemented
-
 
 class LinearLayer(CostLayer):
     """
