@@ -1,5 +1,5 @@
 """
-A custom hacked trainer keeping some of the parameters in main RAM
+A custom hacked trainer
 """
 
 __docformat__ = 'restructedtext en'
@@ -15,6 +15,8 @@ import logging
 import theano
 import theano.tensor as TT
 from groundhog.utils import print_time
+
+floatX = theano.config.floatX
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,10 @@ class SpecialTrainer(object):
                 for details
             :param data:
                 Class describing the dataset used by the model
+            :param small_emb_matrix:
+                The small matrix of word representations
+            :param big_emb_matrix:
+                The big matrix of word representations
         """
 
         # Initialize member and state
@@ -53,22 +59,51 @@ class SpecialTrainer(object):
         self.model = model
         self.rng = numpy.random.RandomState(state['seed'])
 
+        # Hook -1: create big matrices
+        small_emb_matrix = model.small_emb_matrix
+        big_emb_matrix = model.big_emb_matrix
+        self.small_shape = small_emb_matrix.get_value().shape
+        big_shape = big_emb_matrix.get_value(borrow=True).shape
+        big_gs = numpy.zeros(big_shape, dtype=floatX)
+        big_gnorm2 = numpy.zeros(big_shape, dtype=floatX)
+        big_dnorm2 = numpy.zeros(big_shape, dtype=floatX)
+        self.reverse_map = numpy.zeros(big_shape[0], dtype="int64")
+
+        # Hook -0.5: exclude big matrix from gradient
+        params = filter(lambda p : p.name != big_emb_matrix.name, model.params)
+
         # Constructs shared variables
         self.gs = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
                                              dtype=theano.config.floatX),
                                 name=p.name)
-                   for p in model.params]
+                   for p in params]
         self.gnorm2 = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
                                              dtype=theano.config.floatX),
                                 name=p.name+'_g2')
-                   for p in model.params]
+                   for p in params]
         self.dnorm2 = [theano.shared(numpy.zeros(p.get_value(borrow=True).shape,
                                              dtype=theano.config.floatX),
                                 name=p.name+'_d2')
-                   for p in model.params]
+                   for p in params]
         self.gdata = [theano.shared(numpy.zeros( (2,)*x.ndim,
                                                 dtype=x.dtype),
                                     name=x.name) for x in model.inputs]
+
+        # Hook 0
+        # remember the auxiliary matrices corresponding to the small one
+        small_gs = filter(lambda p : p.name == small_emb_matrix.name,
+                self.gs)[0]
+        small_gnorm2 = filter(lambda p : p.name == small_emb_matrix.name + "_g2",
+                self.gnorm2)[0]
+        small_dnorm2 = filter(lambda p : p.name == small_emb_matrix.name + "_d2",
+                self.dnorm2)[0]
+        # First slot is reversed for the parameter matrices,
+        # of which the big one might be not yet loaded.
+        self.small_big_pairs = [
+                (None, None),
+                (small_gs, big_gs),
+                (small_gnorm2, big_gnorm2),
+                (small_dnorm2, big_dnorm2)]
 
         # Compile training function
         logger.debug('Constructing grad function')
@@ -79,14 +114,14 @@ class SpecialTrainer(object):
         rval = theano.clone(model.param_grads + self.update_rules + \
                             self.prop_exprs + [model.train_cost],
                             replace=zip(model.inputs, loc_data))
-        nparams = len(model.params)
+        nparams = len(params)
         nrules = len(self.update_rules)
         gs = rval[:nparams]
         rules = rval[nparams:nparams + nrules]
         outs = rval[nparams + nrules:]
 
         norm_gs = TT.sqrt(sum(TT.sum(x**2)
-            for x,p in zip(gs, self.model.params) if p not in self.model.exclude_params_for_norm))
+            for x,p in zip(gs, params) if p not in self.model.exclude_params_for_norm))
         if 'cutoff' in state and state['cutoff'] > 0:
             c = numpy.float32(state['cutoff'])
             if state['cutoff_rescale_length']:
@@ -94,7 +129,7 @@ class SpecialTrainer(object):
 
             notfinite = TT.or_(TT.isnan(norm_gs), TT.isinf(norm_gs))
             _gs = []
-            for g,p in zip(gs,self.model.params):
+            for g,p in zip(gs, params):
                 if p not in self.model.exclude_params_for_norm:
                     tmpg = TT.switch(TT.ge(norm_gs, c), g*c/norm_gs, g)
                     _gs.append(
@@ -117,16 +152,15 @@ class SpecialTrainer(object):
         self.train_fn = theano.function(
             [], outs, name='train_function',
             updates = updates,
-            givens = zip(model.inputs, loc_data),
-            profile=self.state['profile'])
+            givens = zip(model.inputs, loc_data))
         logger.debug('took {}'.format(time.time() - st))
 
         self.lr = numpy.float32(1.)
         new_params = [p - (TT.sqrt(dn2 + eps) / TT.sqrt(gn2 + eps)) * g
                 for p, g, gn2, dn2 in
-                zip(model.params, self.gs, self.gnorm2, self.dnorm2)]
+                zip(params, self.gs, self.gnorm2, self.dnorm2)]
 
-        updates = zip(model.params, new_params)
+        updates = zip(params, new_params)
         # d2
         d2_up = [(dn2, rho * dn2 + (1. - rho) *
             (((TT.sqrt(dn2 + eps) / TT.sqrt(gn2 + eps)) * g) ** 2.))
@@ -136,8 +170,7 @@ class SpecialTrainer(object):
         self.update_fn = theano.function(
             [], [], name='update_function',
             allow_input_downcast=True,
-            updates = updates,
-            profile=self.state['profile'])
+            updates = updates)
 
         self.old_cost = 1e20
         self.schedules = model.get_schedules()
@@ -149,12 +182,27 @@ class SpecialTrainer(object):
         self.prev_batch = None
 
     def __call__(self):
+        # Only now we can be sure that the model is loaded:
+        self.small_big_pairs[0] = (self.model.small_emb_matrix,
+                self.model.big_emb_matrix.get_value(borrow=True))
+
         batch = self.data.next()
         assert batch
 
+        io_time = 0.0
+
+        before = time.time()
         # Hook 1:
-        # - renumerate the words
-        # - load the small matrices
+        # renumerate the words
+        flat_x = batch['x'].flatten()
+        uniques = numpy.unique(flat_x)
+        self.reverse_map[uniques] = numpy.arange(len(uniques))
+        batch['x'] = self.reverse_map[flat_x].reshape(batch['x'].shape)
+        # load the small matrices
+        for small, big in self.small_big_pairs:
+            small.set_value(big[uniques])
+        io_time += time.time() - before
+        logging.debug("IO time 1: {}".format(io_time))
 
         # Perturb the data (! and the model)
         if isinstance(batch, dict):
@@ -178,7 +226,12 @@ class SpecialTrainer(object):
         self.update_fn()
 
         # Hook 2:
-        # - save the small matrices
+        # save the small matrix
+        before = time.time()
+        for small, big in self.small_big_pairs:
+            big[uniques] = small.get_value()
+        io_time += time.time() - before
+        logging.debug("IO time 2: {}".format(io_time))
 
         g_ed = time.time()
         self.state['lr'] = float(self.lr)
