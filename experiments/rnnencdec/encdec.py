@@ -261,8 +261,6 @@ class EncoderDecoderBase(object):
         # the one used to control resetting gate,
         # the one used to control update gate.
         self.input_embedders = [lambda x : 0] * self.num_levels
-        self.reset_embedders = [lambda x : 0] * self.num_levels
-        self.update_embedders = [lambda x : 0] * self.num_levels
         embedder_kwargs = dict(self.default_kwargs)
         embedder_kwargs.update(dict(
             n_in=self.state['rank_n_approx'],
@@ -273,18 +271,6 @@ class EncoderDecoderBase(object):
                 self.rng,
                 name='{}_input_embdr_{}'.format(prefix, level),
                 **embedder_kwargs)
-            if _prefix(self.state,prefix,'rec_gating'):
-                self.update_embedders[level] = MultiLayer(
-                    self.rng,
-                    learn_bias=False,
-                    name='{}_update_embdr_{}'.format(prefix, level),
-                    **embedder_kwargs)
-            if _prefix(self.state,prefix,'rec_reseting'):
-                self.reset_embedders[level] =  MultiLayer(
-                    self.rng,
-                    learn_bias=False,
-                    name='{}_reset_embdr_{}'.format(prefix, level),
-                    **embedder_kwargs)
 
     def _create_inter_level_layers(self, prefix):
         logger.debug("_create_inter_level_layers")
@@ -404,11 +390,8 @@ class Encoder(EncoderDecoderBase):
         # All the shapes: (n_words, dim)
         input_signals = []
         reset_signals = []
-        update_signals = []
         for level in range(self.num_levels):
             input_signals.append(self.input_embedders[level](approx_embeddings))
-            update_signals.append(self.update_embedders[level](approx_embeddings))
-            reset_signals.append(self.reset_embedders[level](approx_embeddings))
 
         def inp_hook(op, x):
             if x.ndim == 2:
@@ -432,15 +415,11 @@ class Encoder(EncoderDecoderBase):
                 #else:
                 #    hidden_layers[-1].out = hidden_layers[-1].out[:,:self.state['dim']]
                 input_signals[level] += self.inputers[level](hidden_layers[-1])
-                update_signals[level] += self.updaters[level](hidden_layers[-1])
-                reset_signals[level] += self.reseters[level](hidden_layers[-1])
             hidden_layers.append(self.transitions[level](
                     input_signals[level],
                     nsteps=x.shape[0],
                     batch_size=x.shape[1] if x.ndim == 2 else 1,
                     mask=x_mask,
-                    gater_below=none_if_zero(update_signals[level]),
-                    reseter_below=none_if_zero(reset_signals[level]),
                     use_noise=use_noise))
         def hid_hook(op, x):
             if x.ndim == 3:
@@ -523,8 +502,6 @@ class Decoder(EncoderDecoderBase):
     def _create_decoding_layers(self):
         logger.debug("_create_decoding_layers")
         self.decode_inputers = [lambda x : 0] * self.num_levels
-        self.decode_reseters = [lambda x : 0] * self.num_levels
-        self.decode_updaters = [lambda x : 0] * self.num_levels
         decoding_kwargs = dict(self.default_kwargs)
         decoding_kwargs.update(dict(
                 n_in=self.state['dim'],
@@ -536,18 +513,6 @@ class Decoder(EncoderDecoderBase):
                 name='dec_dec_inputter_{}'.format(level),
                 learn_bias=False,
                 **decoding_kwargs)
-            if _prefix(self.state,'dec','rec_gating'):
-                self.decode_updaters[level] = MultiLayer(
-                    self.rng,
-                    name='dec_dec_updater_{}'.format(level),
-                    learn_bias=False,
-                    **decoding_kwargs)
-            if _prefix(self.state,'dec','rec_reseting'):
-                self.decode_reseters[level] = MultiLayer(
-                    self.rng,
-                    name='dec_dec_reseter_{}'.format(level),
-                    learn_bias=False,
-                    **decoding_kwargs)
 
     def _create_readout_layers(self):
         logger.debug("_create_readout_layers")
@@ -665,18 +630,12 @@ class Decoder(EncoderDecoderBase):
         # All the shape if mode != evaluation:
         #   (n_samples, dim)
         input_signals = []
-        reset_signals = []
-        update_signals = []
         for level in range(self.num_levels):
             # Contributions directly from input words.
             input_signals.append(self.input_embedders[level](approx_embeddings))
-            update_signals.append(self.update_embedders[level](approx_embeddings))
-            reset_signals.append(self.reset_embedders[level](approx_embeddings))
 
             # Contributions from the encoded source sentence.
             input_signals[level] += self.decode_inputers[level](replicated_c)
-            update_signals[level] += self.decode_updaters[level](replicated_c)
-            reset_signals[level] += self.decode_reseters[level](replicated_c)
 
         # Hidden layers' initial states.
         # Shapes if mode == evaluation:
@@ -702,13 +661,9 @@ class Decoder(EncoderDecoderBase):
                 #else:
                 #    hidden_layers[level-1].out = hidden_layers[level-1].out[:,:self.state['dim']]
                 input_signals[level] += self.inputers[level](hidden_layers[level - 1])
-                update_signals[level] += self.updaters[level](hidden_layers[level - 1])
-                reset_signals[level] += self.reseters[level](hidden_layers[level - 1])
             hidden_layers.append(self.transitions[level](
                     input_signals[level],
                     mask=y_mask,
-                    gater_below=none_if_zero(update_signals[level]),
-                    reseter_below=none_if_zero(reset_signals[level]),
                     one_step=mode != Decoder.EVALUATION,
                     use_noise=mode == Decoder.EVALUATION,
                     **(dict(state_before=init_states[level])
@@ -1014,3 +969,4 @@ def parse_input(state, word2idx, line, raise_unk=False, idx2word=None):
         return seq, " ".join(parsed_in)
 
     return seq
+
