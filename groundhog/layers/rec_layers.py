@@ -1010,12 +1010,26 @@ class RecurrentLayer(Layer):
             self.noise_params_shape_fn = [constant_shape(x.get_value().shape)
                             for x in self.noise_params]
 
+    def _get_slice_below(self, state_below, to='cell'):
+        if to == 'input':
+            offset = 0
+        elif to == 'update':
+            offset = 1 * self.n_hids
+        elif to == 'reset':
+            offset = 2 * self.n_hids
+        else:
+            raise Warning('Unknown gate/cell types')
+
+        if state_below.ndim == 3:
+            return state_below[:,:,offset:offset+self.n_hids]
+        if state_below.ndim == 2:
+            return state_below[:,offset:offset+self.n_hids]
+        return state_below[offset:offset+self.n_hids]
+
     def step_fprop(self,
                    state_below,
                    mask = None,
                    state_before = None,
-                   gater_below = None,
-                   reseter_below = None,
                    use_noise=True,
                    no_noise_bias = False):
         """
@@ -1063,22 +1077,23 @@ class RecurrentLayer(Layer):
 
         # Reset gate:
         # optionally reset the hidden state.
-        if self.reseting and reseter_below:
+        if self.reseting:
             reseter = self.reseter_activation(TT.dot(state_before, R_hh) +
-                    reseter_below)
+                    self._get_slice_below(state_below, to='reset'))
             reseted_state_before = reseter * state_before
         else:
             reseted_state_before = state_before
 
         # Feed the input to obtain potential new state.
-        preactiv = TT.dot(reseted_state_before, W_hh) + state_below
+        preactiv = TT.dot(reseted_state_before, W_hh) + \
+                self._get_slice_below(state_below, to='input')
         h = self.activation(preactiv)
 
         # Update gate:
         # optionally reject the potential new state and use the new one.
-        if self.gating and gater_below:
+        if self.gating:
             gater = self.gater_activation(TT.dot(state_before, G_hh) +
-                    gater_below)
+                    self._get_slice_below(state_below, to='update'))
             h = gater * h + (1-gater) * state_before
 
         if self.activ_noise and use_noise:
@@ -1093,8 +1108,6 @@ class RecurrentLayer(Layer):
               state_below,
               mask=None,
               init_state=None,
-              gater_below=None,
-              reseter_below=None,
               nsteps=None,
               batch_size=None,
               use_noise=True,
@@ -1115,10 +1128,6 @@ class RecurrentLayer(Layer):
         if state_below.ndim == 2 and \
            (not isinstance(batch_size,int) or batch_size > 1):
             state_below = state_below.reshape((nsteps, batch_size, self.n_in))
-            if gater_below:
-                gater_below = gater_below.reshape((nsteps, batch_size, self.n_in))
-            if reseter_below:
-                reseter_below = reseter_below.reshape((nsteps, batch_size, self.n_in))
 
         if not init_state:
             if not isinstance(batch_size, int) or batch_size != 1:
@@ -1126,52 +1135,15 @@ class RecurrentLayer(Layer):
             else:
                 init_state = TT.alloc(floatX(0), self.n_hids)
 
-        # FIXME: Find a way to clean this up
-        if self.reseting and reseter_below:
-            if self.gating and gater_below:
-                if mask:
-                    inps = [state_below, mask, gater_below, reseter_below]
-                    fn = lambda x,y,g,r,z : self.step_fprop(x,y,z, gater_below=g, reseter_below=r, use_noise=use_noise,
-                                                       no_noise_bias=no_noise_bias)
-                else:
-                    inps = [state_below, gater_below, reseter_below]
-                    fn = lambda tx, tg,tr, ty: self.step_fprop(tx, None, ty, gater_below=tg,
-                                                        reseter_below=tr,
-                                                        use_noise=use_noise,
-                                                        no_noise_bias=no_noise_bias)
-            else:
-                if mask:
-                    inps = [state_below, mask, reseter_below]
-                    fn = lambda x,y,r,z : self.step_fprop(x,y,z, use_noise=use_noise,
-                                                        reseter_below=r,
-                                                       no_noise_bias=no_noise_bias)
-                else:
-                    inps = [state_below, reseter_below]
-                    fn = lambda tx,tr,ty: self.step_fprop(tx, None, ty,
-                                                        reseter_below=tr,
-                                                        use_noise=use_noise,
-                                                        no_noise_bias=no_noise_bias)
+        if mask:
+            inps = [state_below, mask]
+            fn = lambda x,y,z : self.step_fprop(x,y,z, use_noise=use_noise,
+                                               no_noise_bias=no_noise_bias)
         else:
-            if self.gating and gater_below:
-                if mask:
-                    inps = [state_below, mask, gater_below]
-                    fn = lambda x,y,g,z : self.step_fprop(x,y,z, gater_below=g, use_noise=use_noise,
-                                                       no_noise_bias=no_noise_bias)
-                else:
-                    inps = [state_below, gater_below]
-                    fn = lambda tx, tg, ty: self.step_fprop(tx, None, ty, gater_below=tg,
-                                                        use_noise=use_noise,
-                                                        no_noise_bias=no_noise_bias)
-            else:
-                if mask:
-                    inps = [state_below, mask]
-                    fn = lambda x,y,z : self.step_fprop(x,y,z, use_noise=use_noise,
-                                                       no_noise_bias=no_noise_bias)
-                else:
-                    inps = [state_below]
-                    fn = lambda tx, ty: self.step_fprop(tx, None, ty,
-                                                        use_noise=use_noise,
-                                                        no_noise_bias=no_noise_bias)
+            inps = [state_below]
+            fn = lambda tx,ty: self.step_fprop(tx, None, ty, 
+                                                use_noise=use_noise,
+                                                no_noise_bias=no_noise_bias)
 
         rval, updates = theano.scan(fn,
                         sequences = inps,
@@ -1183,7 +1155,7 @@ class RecurrentLayer(Layer):
         new_h = rval
         self.out = rval
         self.rval = rval
-        self.updates =updates
+        self.updates = updates
 
         return self.out
 
