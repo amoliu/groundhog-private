@@ -341,16 +341,11 @@ class Encoder(EncoderDecoderBase):
 
         self.num_levels = self.state['encoder_stack']
         
-<<<<<<< HEAD
         # support multiple gating/memory units
         if 'dim_mult' not in self.state:
             self.state['dim_mult'] = 1.
         if 'hid_mult' not in self.state:
             self.state['hid_mult'] = 1.
-=======
-        if 'dim_mult' not in self.state:
-            self.state['dim_mult'] = 1.
->>>>>>> initial support for lstm
 
     def create_layers(self):
         """ Create all elements of Encoder's computation graph"""
@@ -736,12 +731,6 @@ class Decoder(EncoderDecoderBase):
         # So what we do is discard the last one and prepend the initial one.
         if mode == Decoder.EVALUATION:
             for level in range(self.num_levels):
-                if hidden_layers[level].out.shape[-1] != init_states[level].out.shape[-1]:
-                    istate = TT.zeros_like(init_states[level].out)
-                    istate = TT.concatenate([init_states[level].out, istate], axis=istate.shape.shape[0]-1)
-                else:
-                    istate = init_states[level].out
-
                 hidden_layers[level].out = TT.concatenate([TT.shape_padleft(init_states[level].out),
                         hidden_layers[level].out])[:-1]
 
