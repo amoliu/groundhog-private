@@ -202,7 +202,7 @@ def prototype_autoenc_state():
     return state
 
 def prototype_lstm_state():
-    state = prototype_state()
+    state = prototype_sentence_state()
 
     state['enc_rec_layer'] = 'LSTMLayer'
     state['enc_rec_gating'] = False
