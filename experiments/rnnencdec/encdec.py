@@ -686,7 +686,12 @@ class Decoder(EncoderDecoderBase):
         # So what we do is discard the last one and prepend the initial one.
         if mode == Decoder.EVALUATION:
             for level in range(self.num_levels):
+<<<<<<< HEAD
                 hidden_layers[level].out = TT.concatenate([TT.shape_padleft(init_states[level].out),
+=======
+                hidden_layers[level].out = TT.concatenate([
+                    TT.shape_padleft(init_states[level].out),
+>>>>>>> 329b812e82cca28c665efd33253427deaa9b701e
                         hidden_layers[level].out])[:-1]
 
         # The output representation to be fed in softmax.
