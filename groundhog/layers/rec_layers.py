@@ -1127,7 +1127,7 @@ class RecurrentLayer(Layer):
             batch_size = state_below.shape[1]
         if state_below.ndim == 2 and \
            (not isinstance(batch_size,int) or batch_size > 1):
-            state_below = state_below.reshape((nsteps, batch_size, self.n_in))
+            state_below = state_below.reshape((nsteps, batch_size, state_below.shape[-1]))
 
         if not init_state:
             if not isinstance(batch_size, int) or batch_size != 1:
