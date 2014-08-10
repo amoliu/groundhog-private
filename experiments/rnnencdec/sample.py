@@ -144,7 +144,7 @@ def sample(lm_model, seq, n_samples,
             sentences.append(" ".join(sen))
             if verbose:
                 print "{}: {}".format(costs[i], sentences[-1])
-        return sentences, costs, trans
+        return sentences, costs
     elif sampler:
         sentences = []
         all_probs = []
