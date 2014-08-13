@@ -213,6 +213,12 @@ def prototype_sentence_state():
 
     return state
 
+def prototype_sentence_characters_state():
+    state = prototype_sentence_state()
+
+    state['char_vocab'] = ["/data/lisatmp3/devincol/data/translation_char_vocab.en.pkl"]
+    state['vocab_target'] = ["/data/lisatmp3/chokyun/mt/vocab.unlimited/bitexts.selected/vocab.en.pkl"] 
+
 def prototype_helios_sentence_state():
     state = prototype_sentence_state()
 

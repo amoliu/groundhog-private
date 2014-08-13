@@ -908,6 +908,15 @@ class Decoder(EncoderDecoderBase):
         return self.build_decoder(c, y, mode=Decoder.SAMPLING,
                 given_init_states=init_states)[2:]
 
+# class CharEncoder():
+
+#     def __init__(self, state, rng, prefix='char_enc'):
+#         self.state = state
+#         self.rng = rng
+#         self.prefix = prefix
+
+    
+
 class RNNEncoderDecoder(object):
 
     def __init__(self, state, rng, skip_init=False):
