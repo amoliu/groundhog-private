@@ -27,6 +27,14 @@ from groundhog.utils import sample_weights, \
         sample_zeros
 from basic import Layer
 
+def dbg_hook(hook, x):
+    if not isinstance(x, TT.TensorVariable):
+        x.out = theano.printing.Print(global_fn=hook)(x.out)
+        return x
+    else:
+        return theano.printing.Print(global_fn=hook)(x)
+
+
 class RecurrentMultiLayer(Layer):
     """
     Constructs a recurrent layer whose transition from h_tm1 to h_t is given
@@ -50,7 +58,7 @@ class RecurrentMultiLayer(Layer):
                  name=None):
         """
         :type rng: numpy random generator
-        :param rng: numpy random generator
+v        :param rng: numpy random generator
 
         :type n_in: int
         :param n_in: number of inputs units
@@ -1535,7 +1543,7 @@ class LSTMLayer(Layer):
         return self.out
 
 
-class MulitplicativeRecurrent(Layer):
+class MultiplicativeRecurrent(Layer):
     """ A recurrent layer that uses a different transition matrix for
         each input index.
     """
@@ -1548,9 +1556,9 @@ class MulitplicativeRecurrent(Layer):
                  activation=TT.tanh,
                  bias_fn='init_bias',
                  bias_scale=0.,
-                 init_fn='sample_weights',
-                 name=None):
-        logger.debug("MulitplicativeRecurrent is used")
+                 init_fn='sample_weights_orth',
+                 name=None,
+                 return_hidden_layers=False):
 
         self.grad_scale = 1
 
@@ -1569,6 +1577,7 @@ class MulitplicativeRecurrent(Layer):
         self.init_fn = init_fn
         self.max_labels = max_labels
         self.label_dim = label_dim
+        self.return_hidden_layers = return_hidden_layers
         assert rng is not None, "random number generator should not be empty!"
 
         super(MultiplicativeRecurrent, self).__init__(self.n_hids,
@@ -1587,6 +1596,7 @@ class MulitplicativeRecurrent(Layer):
                                    rng=self.rng),
             name="Wchar_%s"%self.name)
         self.params = [self.W_char]
+       
         self.W_hh = theano.shared(
             numpy.asarray([self.init_fn(self.n_hids,
                                         self.n_hids,
@@ -1628,7 +1638,7 @@ class MulitplicativeRecurrent(Layer):
                                    self.scale,
                                    rng=self.rng),
             name="Rin_%s"%self.name)
-        self.params.append(self.R_hh)
+        self.params.append(self.R_in)
         
         self.W_b = theano.shared(
             self.bias_fn(self.n_hids,
@@ -1652,14 +1662,15 @@ class MulitplicativeRecurrent(Layer):
         self.params.append(self.R_b)
 
         self.restricted_params = [x for x in self.params]
+        self.params_grad_scale = [self.grad_scale for x in self.params]
 
-    def step_fprop(self,
-                   state_below,
-                   mask,
-                   state_in,
-                   update_in,
-                   reset_in,
-                   state_before):
+    def _step_fprop(self,
+                    state_below,
+                    mask,
+                    state_in,
+                    update_in,
+                    reset_in,
+                    state_before):
         """
         Constructs the computational graph of this layer.
 
@@ -1681,32 +1692,38 @@ class MulitplicativeRecurrent(Layer):
             layer
         """
 
-        W_hh = self.W_hh
-        W_b = self.W_b
+        W_hh = self.W_hh[state_below]
+        W_b = self.W_b[state_below]
         G_hh = self.G_hh
         R_hh = self.R_hh
-
         # Reset gate:
         # optionally reset the hidden state.
-        reseter = self.reseter_activation(TT.dot(state_before, R_hh) + 
+        
+        reseter = TT.nnet.sigmoid(TT.dot(state_before, R_hh) + 
                                           reset_in)
-        reseted_state_before = reseter * TT.dot(state_before, W_hh)
+        reseter = dbg_hook(reseter, state_before)
+        reseter = TT.nnet.sigmoid(TT.dot(state_before, R_hh) + 
+                                          reset_in)
 
+        reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
+        reseted_state_before = dbg_hook(reseted_state_before, state_before)
+        reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
         # Feed the input to obtain potential new state.
-        preactiv = reseted_state_before + state_in
+        preactiv = reseted_state_before + state_in + W_b
         h = self.activation(preactiv)
-
         # Update gate:
         # optionally reject the potential new state and use the new one.
-        updater = self.updater_activation(TT.dot(state_before, G_hh) +
+        updater = TT.nnet.sigmoid(TT.dot(state_before, G_hh) +
                                           update_in)
+
         h = updater * h + (1-updater) * state_before
 
         if mask is not None:
             if h.ndim ==2 and mask.ndim==1:
                 mask = mask.dimshuffle(0,'x')
             h = mask * h + (1-mask) * state_before
-        return h, ctx, probs
+
+        return h
 
     def fprop(self, state_below, mask=None):
 
@@ -1716,29 +1733,34 @@ class MulitplicativeRecurrent(Layer):
             floatX = numpy.float64
         nsteps = state_below.shape[0]
         batch_size = state_below.shape[1]
-        if state_below.ndim == 2 and \
-           (not isinstance(batch_size,int) or batch_size > 1):
-            state_below = state_below.reshape((nsteps, batch_size, self.n_in))
+        # if state_below.ndim == 2 and \
+        #    (not isinstance(batch_size,int) or batch_size > 1):
+        #     state_below = state_below.reshape((nsteps, batch_size, self.n_in))
 
+        print "state_below", state_below.ndim
         if not isinstance(batch_size, int) or batch_size != 1:
             init_state = TT.alloc(floatX(0), batch_size, self.n_hids)
         else:
             init_state = TT.alloc(floatX(0), self.n_hids)
 
         state_in = self.W_char[state_below]
-        update_in = TT.dot(proj, self.G_in) + self.G_b
-        reset_in = TT.dot(proj, self.R_in) + self.R_b
+        update_in = TT.dot(state_in, self.G_in) + self.G_b
+        reset_in = TT.dot(state_in, self.R_in) + self.R_b
 
-        sequences = [state_in, mask, update_in, reset_in]
+        sequences = [state_below, mask, state_in, update_in, reset_in]
 
-        rval, updates = theano.scan(self.step_fprop,
+        rval, updates = theano.scan(self._step_fprop,
                         sequences=sequences,
                         outputs_info=[init_state],
                         name='layer_%s'%self.name,
                         n_steps=nsteps)
+        
         self.out = rval
         self.rval = rval
         self.updates = updates
-
-        return self.out
+        
+        if self.return_hidden_layers:
+            return self.out
+        else:
+            return self.out[-1]
 

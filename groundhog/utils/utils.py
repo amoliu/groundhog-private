@@ -107,6 +107,7 @@ def sample_weights(sizeX, sizeY, sparsity, scale, rng):
 def sample_weights_classic(sizeX, sizeY, sparsity, scale, rng):
     sizeX = int(sizeX)
     sizeY = int(sizeY)
+
     if sparsity < 0:
         sparsity = sizeY
     else:

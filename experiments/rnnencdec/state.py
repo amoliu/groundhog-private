@@ -219,8 +219,11 @@ def prototype_sentence_state():
 def prototype_sentence_characters_state():
     state = prototype_sentence_state()
 
-    state['char_vocab'] = ["/data/lisatmp3/devincol/data/translation_char_vocab.en.pkl"]
-    state['vocab_target'] = ["/data/lisatmp3/chokyun/mt/vocab.unlimited/bitexts.selected/vocab.en.pkl"] 
+    state['word_to_char'] = "/data/lisatmp3/devincol/data/translation/vocab.unlimited/vocab_aschar.en.npy"
+    state['char_n_hids'] = 300
+    state['char_proj_dim'] = 256
+    state['char_labels'] = 145
+    return state
 
 def prototype_helios_sentence_state():
     state = prototype_sentence_state()

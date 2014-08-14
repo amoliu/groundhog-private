@@ -16,6 +16,7 @@ from groundhog.layers import\
         SoftmaxLayer,\
         LSTMLayer, \
         RecurrentLayer,\
+        MultiplicativeRecurrent, \
         RecursiveConvolutionalLayer,\
         UnaryOp,\
         Shift,\
@@ -49,7 +50,7 @@ def create_padded_batch(state, x, y, return_dict=False):
 
     Notes:
     * actually works only with x[0] and y[0]
-    * len(x[0]) thus is just the minibatch size
+v    * len(x[0]) thus is just the minibatch size
     * len(x[0][idx]) is the size of sequence idx
     """
 
@@ -126,7 +127,7 @@ def create_padded_batch(state, x, y, return_dict=False):
     Ymask = Ymask[:,valid_inputs.nonzero()[0]]
     if len(valid_inputs.nonzero()[0]) <= 0:
         return None
-
+    
     if return_dict:
         # Are Y and Y0 different?
         return {'x' : X, 'x_mask' : Xmask,
@@ -675,7 +676,6 @@ class Encoder(EncoderDecoderBase):
         self.rng = rng
         self.prefix = prefix
         self.skip_init = skip_init
-
         self.num_levels = self.state['encoder_stack']
 
         # support multiple gating/memory units
@@ -1255,14 +1255,57 @@ class Decoder(EncoderDecoderBase):
         return self.build_decoder(c, y, mode=Decoder.SAMPLING,
                 given_init_states=init_states, step_num=step_num)[2:]
 
-# class CharEncoder():
+class CharEncoder():
 
-#     def __init__(self, state, rng, prefix='char_enc'):
-#         self.state = state
-#         self.rng = rng
-#         self.prefix = prefix
+    def __init__(self, state, rng, prefix='char_enc'):
+        self.state = state
+        self.rng = rng
+        self.prefix = prefix
 
-    
+        # For expander layer
+        self.default_kwargs = dict(
+            init_fn=self.state['weight_init_fn'],
+            weight_noise=self.state['weight_noise'],
+            scale=self.state['weight_scale'])
+
+    def create_layers(self):
+        with open(self.state['word_to_char']) as f:
+            self.word_to_chars = theano.shared(numpy.load(f), name="%s_WordToChar_"%self.prefix)
+            
+        self.rnn_layer = MultiplicativeRecurrent(
+            self.rng, 
+            self.state['char_n_hids'], 
+            self.state['char_labels'], 
+            self.state['char_proj_dim'], 
+            return_hidden_layers=False,
+            name="{}_recurrent".format(self.prefix)
+        )
+
+        self.expander = MultiLayer(
+            self.rng,
+            n_in=self.state['char_n_hids'],
+            n_hids=[self.state['dim']],
+            activation=['lambda x: x'],
+            name="{}_expander".format(self.prefix),
+            **self.default_kwargs)
+        
+    def build_char_encoder(self, x, x_mask=None):
+        shape = x.shape
+        batch_size = shape[1]
+        n_steps = shape[0]
+
+        # Get character arrays for each word
+        chars = self.word_to_chars[x.flatten()]
+
+        # Character arrays are padded to 30 chars with -1
+        mask = chars>-1
+
+        # Remove the columns that only contain padding
+        splice = TT.any(mask, axis=0)
+        chars = chars[splice]
+        chars_mask = mask[splice]
+        return self.expander(self.rnn_layer(chars, chars_mask))
+        
 
 class RNNEncoderDecoder(object):
 
@@ -1281,6 +1324,14 @@ class RNNEncoderDecoder(object):
 
         # Annotation for the log-likelihood computation
         training_c_components = []
+        
+        if 'word_to_char' in self.state:
+            logger.debug("Create CharEncoder")
+            self.char_encoder = CharEncoder(self.state, self.rng)
+            self.char_encoder.create_layers()
+            
+            logger.debug("Build char encoding computational graph")
+            character_embeddings = self.char_encoder.build_char_encoder(self.x, self.x_mask)
 
         logger.debug("Create encoder")
         self.encoder = Encoder(self.state, self.rng,
@@ -1289,10 +1340,18 @@ class RNNEncoderDecoder(object):
         self.encoder.create_layers()
 
         logger.debug("Build encoding computation graph")
-        forward_training_c = self.encoder.build_encoder(
+        if 'word_to_char' in self.state:
+            forward_training_c = self.encoder.build_encoder(
+                self.x, self.x_mask,
+                use_noise=True,
+                approx_embeddings = character_embeddings,
+                return_hidden_layers=True)
+        else:
+            forward_training_c = self.encoder.build_encoder(
                 self.x, self.x_mask,
                 use_noise=True,
                 return_hidden_layers=True)
+
 
         logger.debug("Create backward encoder")
         self.backward_encoder = Encoder(self.state, self.rng,
