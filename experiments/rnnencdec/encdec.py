@@ -50,7 +50,7 @@ def create_padded_batch(state, x, y, return_dict=False):
 
     Notes:
     * actually works only with x[0] and y[0]
-v    * len(x[0]) thus is just the minibatch size
+    * len(x[0]) thus is just the minibatch size
     * len(x[0][idx]) is the size of sequence idx
     """
 
@@ -542,6 +542,16 @@ def dbg_hook(hook, x):
     else:
         return theano.printing.Print(global_fn=hook)(x)
 
+def dbg_shape(string, var):
+    return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, x.shape)), var)
+
+def dbg_value(string, var):
+    return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, x)), var)
+
+def dbg_sum2(string, var):
+    return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, np.sum(x))), var)
+
+
 def hid_hook(_, x, msg="repr sums"):
     if x.ndim == 3:
         x = x[:, 0, :]
@@ -740,6 +750,7 @@ class Encoder(EncoderDecoderBase):
         #   (seq_len, rank_n_approx)
         if not approx_embeddings:
             approx_embeddings = self.approx_embedder(x)
+       
         # approx_embeddings = dbg_hook(partial(hid_hook, msg="embeddings"), approx_embeddings)
 
         # Low rank embeddings are projected to contribute
@@ -1284,10 +1295,11 @@ class CharEncoder():
         self.expander = MultiLayer(
             self.rng,
             n_in=self.state['char_n_hids'],
-            n_hids=[self.state['dim']],
+            n_hids=[self.state['rank_n_approx']],
             activation=['lambda x: x'],
             name="{}_expander".format(self.prefix),
             **self.default_kwargs)
+        
         
     def build_char_encoder(self, x, x_mask=None):
         shape = x.shape
@@ -1301,10 +1313,17 @@ class CharEncoder():
         mask = chars>-1
 
         # Remove the columns that only contain padding
-        splice = TT.any(mask, axis=0)
-        chars = chars[splice]
-        chars_mask = mask[splice]
-        return self.expander(self.rnn_layer(chars, chars_mask))
+        splice_cols = TT.any(mask, axis=0)
+
+        #splice = dbg_sum2("splice sum", splice)
+        chars = chars[:,splice_cols]
+        chars_mask = mask[:,splice_cols]
+
+        #chars = dbg_shape("chars post slice", chars)
+                
+        char_embeds = self.expander(self.rnn_layer(chars, chars_mask)[-1])
+        char_embeds = char_embeds.reshape((n_steps, batch_size, char_embeds.shape[1]))
+        return char_embeds
         
 
 class RNNEncoderDecoder(object):
@@ -1321,13 +1340,14 @@ class RNNEncoderDecoder(object):
         self.y = TT.lmatrix('y')
         self.y_mask = TT.matrix('y_mask')
         self.inputs = [self.x, self.y, self.x_mask, self.y_mask]
+        dbg_hook(lambda _, x: logger.debug("___y shape is{}".format(x.shape)), self.y)
 
         # Annotation for the log-likelihood computation
         training_c_components = []
         
         if 'word_to_char' in self.state:
             logger.debug("Create CharEncoder")
-            self.char_encoder = CharEncoder(self.state, self.rng)
+            self.char_encoder = CharEncoder(self.state, self.rng, prefix="charenc")
             self.char_encoder.create_layers()
             
             logger.debug("Build char encoding computational graph")
@@ -1351,7 +1371,6 @@ class RNNEncoderDecoder(object):
                 self.x, self.x_mask,
                 use_noise=True,
                 return_hidden_layers=True)
-
 
         logger.debug("Create backward encoder")
         self.backward_encoder = Encoder(self.state, self.rng,
