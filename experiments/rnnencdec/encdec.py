@@ -127,7 +127,7 @@ v    * len(x[0]) thus is just the minibatch size
     Ymask = Ymask[:,valid_inputs.nonzero()[0]]
     if len(valid_inputs.nonzero()[0]) <= 0:
         return None
-    
+
     if return_dict:
         # Are Y and Y0 different?
         return {'x' : X, 'x_mask' : Xmask,
@@ -1271,12 +1271,12 @@ class CharEncoder():
     def create_layers(self):
         with open(self.state['word_to_char']) as f:
             self.word_to_chars = theano.shared(numpy.load(f), name="%s_WordToChar_"%self.prefix)
-            
+
         self.rnn_layer = MultiplicativeRecurrent(
-            self.rng, 
-            self.state['char_n_hids'], 
-            self.state['char_labels'], 
-            self.state['char_proj_dim'], 
+            self.rng,
+            self.state['char_n_hids'],
+            self.state['char_labels'],
+            self.state['char_proj_dim'],
             return_hidden_layers=False,
             name="{}_recurrent".format(self.prefix)
         )
@@ -1288,7 +1288,7 @@ class CharEncoder():
             activation=['lambda x: x'],
             name="{}_expander".format(self.prefix),
             **self.default_kwargs)
-        
+
     def build_char_encoder(self, x, x_mask=None):
         shape = x.shape
         batch_size = shape[1]
@@ -1305,7 +1305,102 @@ class CharEncoder():
         chars = chars[splice]
         chars_mask = mask[splice]
         return self.expander(self.rnn_layer(chars, chars_mask))
-        
+
+class CharDecoder():
+
+    def __init__(self, state, rng, prefix='char_enc'):
+        self.state = state
+        self.rng = rng
+        self.prefix = prefix
+
+        # For expander layer
+        self.default_kwargs = dict(
+            init_fn=self.state['weight_init_fn'],
+            weight_noise=self.state['weight_noise'],
+            scale=self.state['weight_scale'])
+
+    def create_layers(self):
+        with open(self.state['word_to_char']) as f:
+            self.word_to_chars = theano.shared(numpy.load(f), name="%s_WordToChar_"%self.prefix)
+
+        self.rnn_layer = MultiplicativeRecurrent(
+            self.rng,
+            self.state['char_n_hids'],
+            self.state['char_labels'],
+            self.state['char_proj_dim'],
+            return_hidden_layers=False,
+            name="{}_recurrent".format(self.prefix)
+        )
+
+        self.expander = MultiLayer(
+            self.rng,
+            n_in=self.state['char_n_hids'],
+            n_hids=[self.state['dim']],
+            activation=['lambda x: x'],
+            name="{}_expander".format(self.prefix),
+            **self.default_kwargs)
+
+    def build_evaluator(self, c, y):
+        """
+        Builds a computation graph, that given the representation c and words y computes
+        the probabilities of generating y.
+
+        :param c:
+            representation, expected shape: (batch_size, rank_n_approx)
+
+        :param y:
+            target words, expected shape: (batch_size,)
+
+        :returns:
+            log-likelihood of the words y: (batch_size,)
+        """
+
+        # Stage 1 - build z and z_mask from y
+        # Stage 2 - scan with build_decoder_step
+
+    def build_sequence_sampler(self, c, n_steps):
+        """
+        Builds a computation graph, that given the representation c
+        generates a sample (a sequence)
+
+        :param c:
+            representation, expected shape: (batch_size, rank_n_approx,
+
+        :n_steps:
+            number of steps, scalar
+
+        :returns:
+            matrix of sampled characters (batch_size, n_steps)
+        """
+
+        # Scan with build_decoder_step
+
+    def build_decoder_step(self, c, h, z=None, z_mask=None):
+        """
+        Build a computation graph of a decoder step,
+
+        :param c:
+            (batch_size, dim) - representations of source sequences
+
+        :param h:
+            (batch_size, dim) - previous hidden states
+
+        :param z:
+            None if used for sampling
+            (batch_size,) - the characters, whose emission probability we want to estimate if evaluating
+
+        :param z_mask:
+            None if used for sampling
+            (batch_size,) - the 0/1 matrix specifying position of actual characters (not padding)
+
+        :returns:
+            [(batch_size, dim) - next hidden states,
+             (batch_size,) - the generated characters (or z if given),
+             (batch_size,) - the log-probabilities of the generated characters (or oz if given)]
+        """
+
+        # Stage 1 - generate the next character (if sampling)
+        # Stage 2 - compute the next hidden state
 
 class RNNEncoderDecoder(object):
 
@@ -1324,12 +1419,12 @@ class RNNEncoderDecoder(object):
 
         # Annotation for the log-likelihood computation
         training_c_components = []
-        
+
         if 'word_to_char' in self.state:
             logger.debug("Create CharEncoder")
             self.char_encoder = CharEncoder(self.state, self.rng)
             self.char_encoder.create_layers()
-            
+
             logger.debug("Build char encoding computational graph")
             character_embeddings = self.char_encoder.build_char_encoder(self.x, self.x_mask)
 
