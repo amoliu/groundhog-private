@@ -1352,25 +1352,9 @@ class CharDecoder():
             scale=self.state['weight_scale'])
 
     def create_layers(self):
-        with open(self.state['word_to_char']) as f:
-            self.word_to_chars = theano.shared(numpy.load(f), name="%s_WordToChar_"%self.prefix)
-
-        self.rnn_layer = MultiplicativeRecurrent(
-            self.rng,
-            self.state['char_n_hids'],
-            self.state['char_labels'],
-            self.state['char_proj_dim'],
-            return_hidden_layers=False,
-            name="{}_recurrent".format(self.prefix)
-        )
-
-        self.expander = MultiLayer(
-            self.rng,
-            n_in=self.state['char_n_hids'],
-            n_hids=[self.state['dim']],
-            activation=['lambda x: x'],
-            name="{}_expander".format(self.prefix),
-            **self.default_kwargs)
+        """ Not sure what layers there are to build yet """
+        # Need to allocate weight matrices, self.n_hids
+        pass
 
     def build_evaluator(self, c, y):
         """
@@ -1386,9 +1370,28 @@ class CharDecoder():
         :returns:
             log-likelihood of the words y: (batch_size,)
         """
-
         # Stage 1 - build z and z_mask from y
+        # Get character arrays for each word
+        shape = y.shape
+        batch_size = shape[1]
+        n_steps = shape[0]
+
+        z = self.word_to_chars[y.flatten()]
+
+        # Character arrays are padded to 30 chars with -1
+        z_mask = chars>-1
+
+        # Remove the columns that only contain padding
+        splice_cols = TT.any(z_mask, axis=0)
+        z = z[:,splice_cols]
+        z_mask = z_mask[:,splice_cols]
+        
         # Stage 2 - scan with build_decoder_step
+        h0 = TT.alloc(floatX(0), batch_size, self.n_hids)
+        sequences = [z, z_mask]
+        non_sequences = [c]
+        fn = lambda z, z_mask, h, c : self.build_decoder_step(c, h, z=z, z_mask=z_mask)
+        rval, updates = theano.scan(fn, sequences=sequences, outputs_info=[h0], non_sequences=non_sequences)
 
     def build_sequence_sampler(self, c, n_steps):
         """
@@ -1396,7 +1399,7 @@ class CharDecoder():
         generates a sample (a sequence)
 
         :param c:
-            representation, expected shape: (batch_size, rank_n_approx,
+            representation, expected shape: (batch_size, rank_n_approx)
 
         :n_steps:
             number of steps, scalar
@@ -1404,7 +1407,7 @@ class CharDecoder():
         :returns:
             matrix of sampled characters (batch_size, n_steps)
         """
-
+        
         # Scan with build_decoder_step
 
     def build_decoder_step(self, c, h, z=None, z_mask=None):
