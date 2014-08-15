@@ -1281,8 +1281,15 @@ class CharEncoder():
 
     def create_layers(self):
         with open(self.state['word_to_char']) as f:
-            self.word_to_chars = theano.shared(numpy.load(f), name="%s_WordToChar_"%self.prefix)
-            
+            matrix = numpy.load(f)
+            print matrix[0]
+            print matrix[1]
+            print matrix[2]
+            self.word_to_chars = theano.shared(matrix, name="%s_WordToChar_"%self.prefix)
+            # self.word_to_chars = theano.shared(
+            #     numpy.asarray([numpy.arange(1, 31) for i in range(200000)]),
+            #     name="%s_WordToChar_"%self.prefix)
+
         self.rnn_layer = MultiplicativeRecurrent(
             self.rng, 
             self.state['char_n_hids'], 
@@ -1306,22 +1313,29 @@ class CharEncoder():
         batch_size = shape[1]
         n_steps = shape[0]
 
+        x = dbg_value("x", x)
+
         # Get character arrays for each word
         chars = self.word_to_chars[x.flatten()]
+        #flat_x = x.flatten()
+        #chars = TT.alloc(23, *(flat_x.shape[0], 30))
 
         # Character arrays are padded to 30 chars with -1
-        mask = chars>-1
+        chars_mask = chars>-1
 
         # Remove the columns that only contain padding
-        splice_cols = TT.any(mask, axis=0)
+        #splice_cols = TT.any(chars_mask, axis=0)
 
         #splice = dbg_sum2("splice sum", splice)
-        chars = chars[:,splice_cols]
-        chars_mask = mask[:,splice_cols]
+        #chars = chars[:,splice_cols]
+        #chars_mask = chars_mask[:,splice_cols]
+        chars = dbg_shape("chars no splice", chars)
+        chars_mask = dbg_shape("chars no splice", chars_mask)
 
         #chars = dbg_shape("chars post slice", chars)
                 
         char_embeds = self.expander(self.rnn_layer(chars, chars_mask)[-1])
+        #char_embeds = self.rnn_layer(chars, chars_mask)[-1]
         char_embeds = char_embeds.reshape((n_steps, batch_size, char_embeds.shape[1]))
         return char_embeds
         

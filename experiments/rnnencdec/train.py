@@ -90,6 +90,8 @@ def main():
     if state['reload']:
         main.load()
     if state['loopIters'] > 0:
+        #import ipdb
+        #ipdb.set_trace()
         main.main()
 
 if __name__ == "__main__":
