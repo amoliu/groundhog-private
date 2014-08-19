@@ -549,7 +549,7 @@ def dbg_value(string, var):
     return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, x)), var)
 
 def dbg_sum2(string, var):
-    return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, np.sum(x))), var)
+    return dbg_hook(lambda _, x: logger.debug("{} {}".format(string, numpy.sum(x))), var)
 
 
 def hid_hook(_, x, msg="repr sums"):
@@ -1282,9 +1282,6 @@ class CharEncoder():
     def create_layers(self):
         with open(self.state['word_to_char']) as f:
             matrix = numpy.load(f)
-            print matrix[0]
-            print matrix[1]
-            print matrix[2]
             self.word_to_chars = theano.shared(matrix, name="%s_WordToChar_"%self.prefix)
             # self.word_to_chars = theano.shared(
             #     numpy.asarray([numpy.arange(1, 31) for i in range(200000)]),
@@ -1312,24 +1309,27 @@ class CharEncoder():
         batch_size = shape[1]
         n_steps = shape[0]
 
-        x = dbg_value("x", x)
+        #x = dbg_value("x", x)
 
         # Get character arrays for each word
         chars = self.word_to_chars[x.flatten()]
         #flat_x = x.flatten()
         #chars = TT.alloc(23, *(flat_x.shape[0], 30))
 
+        #chars = dbg_shape("chars before splice", chars)
         # Character arrays are padded to 30 chars with -1
-        chars_mask = chars>-1
+        chars_mask = chars>0
 
         # Remove the columns that only contain padding
-        #splice_cols = TT.any(chars_mask, axis=0)
+        splice_cols = TT.any(chars_mask, axis=0)
+        splice_cols = TT.arange(TT.sum(splice_cols))
 
-        #splice = dbg_sum2("splice sum", splice)
-        #chars = chars[:,splice_cols]
-        #chars_mask = chars_mask[:,splice_cols]
-        chars = dbg_shape("chars no splice", chars)
-        chars_mask = dbg_shape("chars no splice", chars_mask)
+        #splice_cols = dbg_value("splice", splice_cols)
+        chars = chars[:,splice_cols]
+        #print "chars ndim", chars.ndim
+        chars_mask = chars_mask[:,splice_cols]
+        chars = dbg_shape("chars after splice", chars)
+        #chars_mask = dbg_shape("chars no splice", chars_mask)
 
         #chars = dbg_shape("chars post slice", chars)
                 

@@ -219,10 +219,10 @@ def prototype_sentence_state():
 def prototype_sentence_characters_state():
     state = prototype_sentence_state()
 
-    state['word_to_char'] = "/data/lisatmp3/devincol/data/translation/vocab.unlimited/vocab_aschar.en.npy"
+    state['word_to_char'] = "/data/lisatmp3/devincol/data/translation/vocab.unlimited/vocab.aschars_subs.en.npy"
     state['char_n_hids'] = 300
     state['char_proj_dim'] = 256
-    state['char_labels'] = 145
+    state['char_labels'] = 2992 #195
     return state
 
 def prototype_helios_sentence_state():

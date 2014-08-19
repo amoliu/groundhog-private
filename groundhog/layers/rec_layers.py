@@ -1612,17 +1612,17 @@ class MultiplicativeRecurrent(Layer):
         self.params.append(self.W_in)
 
         self.W_hh = theano.shared(
-            numpy.asarray([self.init_fn(self.n_hids,
-                                        self.n_hids,
-                                        -1,
-                                        self.scale,
-                                        rng=self.rng)
-                           for i in range(self.max_labels)]),
-            # self.init_fn(self.n_hids,
-            #              self.n_hids,
-            #              -1,
-            #              self.scale,
-            #              rng=self.rng),
+            # numpy.asarray([self.init_fn(self.n_hids,
+            #                             self.n_hids,
+            #                             -1,
+            #                             self.scale,
+            #                             rng=self.rng)
+            #                for i in range(self.max_labels)]),
+            self.init_fn(self.n_hids,
+                         self.n_hids,
+                         -1,
+                         self.scale,
+                         rng=self.rng),
             name="Whh_%s"%self.name)
         self.params.append(self.W_hh)
         self.G_hh = theano.shared(
@@ -1659,11 +1659,11 @@ class MultiplicativeRecurrent(Layer):
             name="Rin_%s"%self.name)
         self.params.append(self.R_in)
         
-        self.W_b = theano.shared(numpy.asarray([
+        self.W_b = theano.shared(#numpy.asarray([
             self.bias_fn(self.n_hids,
                          self.scale,
-                         self.rng),
-            for i in range(self.max_labels)]),
+                         self.rng)         ,
+            #for i in range(self.max_labels)]),
             name="Wb_%s"%self.name)
         self.params.append(self.W_b)
 
@@ -1712,8 +1712,8 @@ class MultiplicativeRecurrent(Layer):
             layer
         """
 
-        W_hh = self.W_hh[state_below]
-        W_b = self.W_b[state_below]
+        W_hh = self.W_hh#[state_below]
+        W_b = self.W_b#[state_below]
         G_hh = self.G_hh
         R_hh = self.R_hh
         # Reset gate:
@@ -1728,8 +1728,8 @@ class MultiplicativeRecurrent(Layer):
        # W_hh = add_hook("W_hh", W_hh)
        # W_b = add_hook("W_b", W_b)
         
-        reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
-        #reseted_state_before = reseter * TT.dot(state_before, W_hh)
+        #reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
+        reseted_state_before = reseter * TT.dot(state_before, W_hh)
         # Feed the input to obtain potential new state.
         preactiv = reseted_state_before + state_in + W_b
 
