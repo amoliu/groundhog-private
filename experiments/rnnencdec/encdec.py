@@ -22,7 +22,8 @@ from groundhog.layers import\
         Shift,\
         LastState,\
         DropOp,\
-        Concatenate
+        Concatenate, \
+        BagOfParts
 from groundhog.models import LM_Model
 from groundhog.datasets import PytablesBitextIterator
 from groundhog.utils import sample_zeros, sample_weights_orth, init_bias, sample_weights_classic
@@ -482,6 +483,8 @@ class RecurrentLayerWithSearch(Layer):
                     c=c1, p_from_c=pc,
                     use_noise=use_noise, no_noise_bias=no_noise_bias)
 
+        print "c", type(c)
+        print "self.Acp", type(self.A_cp)
         p_from_c =  utils.dot(c, self.A_cp).reshape(
                 (c.shape[0], c.shape[1], self.n_hids))
         non_sequences = [c] + non_sequences + [p_from_c]
@@ -1303,14 +1306,23 @@ class CharEncoder():
             #     numpy.asarray([numpy.arange(1, 31) for i in range(200000)]),
             #     name="%s_WordToChar_"%self.prefix)
 
-        self.rnn_layer = MultiplicativeRecurrent(
+        # self.rnn_layer = MultiplicativeRecurrent(
+        #     self.rng,
+        #     self.state['char_n_hids'],
+        #     self.state['char_labels'],
+        #     self.state['char_proj_dim'],
+        #     return_hidden_layers=False,
+        #     name="{}_recurrent".format(self.prefix)
+        # )
+
+        
+        self.encoder_layer = BagOfParts(
             self.rng,
-            self.state['char_n_hids'],
-            self.state['char_labels'],
-            self.state['char_proj_dim'],
-            return_hidden_layers=False,
-            name="{}_recurrent".format(self.prefix)
-        )
+            max_labels=self.state['char_labels'],
+            label_dim=self.state['char_proj_dim'],
+            n_hids=self.state['char_n_hids'],
+            name="{}_bagofparts".format(self.prefix))
+            
 
         self.expander = MultiLayer(
             self.rng,
@@ -1344,12 +1356,12 @@ class CharEncoder():
         chars = chars[:,splice_cols]
         #print "chars ndim", chars.ndim
         chars_mask = chars_mask[:,splice_cols]
-        chars = dbg_shape("chars after splice", chars)
+        #chars = dbg_shape("chars after splice", chars)
         #chars_mask = dbg_shape("chars no splice", chars_mask)
 
         #chars = dbg_shape("chars post slice", chars)
                 
-        char_embeds = self.expander(self.rnn_layer(chars, chars_mask)[-1])
+        char_embeds = self.expander(self.encoder_layer(chars, chars_mask)) #[-1])
         #char_embeds = self.rnn_layer(chars, chars_mask)[-1]
         char_embeds = char_embeds.reshape((n_steps, batch_size, char_embeds.shape[1]))
         return char_embeds
@@ -1360,17 +1372,40 @@ class CharDecoder():
         self.state = state
         self.rng = rng
         self.prefix = prefix
-
-        # For expander layer
-        self.default_kwargs = dict(
-            init_fn=self.state['weight_init_fn'],
-            weight_noise=self.state['weight_noise'],
-            scale=self.state['weight_scale'])
+        self.weight_kwargs = dict(
+            sparsity = -1,
+            scale = self.state['weight_scale'],
+            rng=self.rng)
+        self.bias_kwargs = dict(
+            scale = self.state['weight_scale'],
+            rng=self.rng)
 
     def create_layers(self):
-        """ Not sure what layers there are to build yet """
+        """
+        """
         # Need to allocate weight matrices, self.n_hids
-        pass
+        self.W_ch = sample_weights_classic(self.state['rank_n_approx'],
+                                           self.n_hids, 
+                                           **self.weight_kwargs)
+        self.b_h = init_bias(self.n_hids, **self.bias_kwargs)
+
+        self.W_cz = sample_weights_classic(self.state['rank_n_approx'],
+                                           self.outdim, 
+                                           **self.weight_kwargs)
+        self.b_z = init_bias(self.outdim, **self.bias_kwargs)
+
+        self.W_hh = sample_weights_classic(self.n_hids,
+                                           self.n_hids, 
+                                           **self.weight_kwargs)
+        self.b_h = init_bias(self.n_hids, **self.bias_kwargs)
+
+        self.W_hz = sample_weights_classic(self.n_hids,
+                                           self.outdim,
+                                           **self.weight_kwargs)
+
+        self.W_zh = sample_weights_classic(self.outdim,
+                                           self.n_hids, 
+                                           **self.weight_kwargs)
 
     def build_evaluator(self, c, y):
         """
@@ -1408,6 +1443,7 @@ class CharDecoder():
         non_sequences = [c]
         fn = lambda z, z_mask, h, c : self.build_decoder_step(c, h, z=z, z_mask=z_mask)
         rval, updates = theano.scan(fn, sequences=sequences, outputs_info=[h0], non_sequences=non_sequences)
+        
 
     def build_sequence_sampler(self, c, n_steps):
         """
@@ -1423,6 +1459,10 @@ class CharDecoder():
         :returns:
             matrix of sampled characters (batch_size, n_steps)
         """
+        fn = lambda h, c: seld.build_decoder_step(c, h)
+        outputs = [c]
+        non_sequences = [c]
+        rval, updates = theano.scan(fn, outputs_info=outputs, non_sequences=non_sequences)
         
         # Scan with build_decoder_step
 
@@ -1449,9 +1489,15 @@ class CharDecoder():
              (batch_size,) - the generated characters (or z if given),
              (batch_size,) - the log-probabilities of the generated characters (or oz if given)]
         """
-
         # Stage 1 - generate the next character (if sampling)
+        # Softmax of this?
+        if z is None:
+            next_z = utils.dot(c, self.W_cz) + utils.dot(h, self.W_hz) + self.b_z
+
         # Stage 2 - compute the next hidden state
+        next_h = utils.dot(c, self.W_ch) + utils.dot(h, self.W_hh) + self.b_h
+        
+
 
 class RNNEncoderDecoder(object):
 

@@ -1549,7 +1549,7 @@ class LSTMLayer(Layer):
 
 
 class MultiplicativeRecurrent(Layer):
-    """ A recurrent layer that uses a different transition matrix for
+    """ A recurrent layer that can use a different transition matrix for
         each input index.
     """
 
@@ -1563,7 +1563,8 @@ class MultiplicativeRecurrent(Layer):
                  bias_scale=0.,
                  init_fn='sample_weights_orth',
                  name=None,
-                 return_hidden_layers=False):
+                 return_hidden_layers=False,
+                 multiplicative=False):
 
         self.grad_scale = 1
 
@@ -1573,7 +1574,8 @@ class MultiplicativeRecurrent(Layer):
             bias_fn = eval(bias_fn)
         if type(activation) is str or type(activation) is unicode:
             activation = eval(activation)
-
+            
+        self.multiplicative = multiplicative
         self.scale = scale
         self.activation = activation
         self.n_hids = n_hids
@@ -1593,15 +1595,17 @@ class MultiplicativeRecurrent(Layer):
         self._init_params()
 
     def _init_params(self):
-        self.W_char = theano.shared(
+        self.W_emb = theano.shared(
             sample_weights_classic(self.max_labels,
                                    self.label_dim,
                                    -1,
                                    self.scale,
                                    rng=self.rng),
-            name="Wchar_%s"%self.name)
-        self.params = [self.W_char]
+            name="Wemb_%s"%self.name)
+        self.params = [self.W_emb]
        
+
+
         self.W_in = theano.shared(
             sample_weights_classic(self.label_dim,
                                    self.n_hids,
@@ -1611,20 +1615,45 @@ class MultiplicativeRecurrent(Layer):
             name="Win_%s"%self.name)
         self.params.append(self.W_in)
 
-        self.W_hh = theano.shared(
-            # numpy.asarray([self.init_fn(self.n_hids,
-            #                             self.n_hids,
-            #                             -1,
-            #                             self.scale,
-            #                             rng=self.rng)
-            #                for i in range(self.max_labels)]),
-            self.init_fn(self.n_hids,
-                         self.n_hids,
-                         -1,
-                         self.scale,
-                         rng=self.rng),
-            name="Whh_%s"%self.name)
+        if self.multiplicative:
+            self.W_hh = theano.shared(
+                numpy.asarray([self.init_fn(self.n_hids,
+                                            self.n_hids,
+                                            -1,
+                                            self.scale,
+                                            rng=self.rng)
+                               for i in range(self.max_labels)]),
+                self.init_fn(self.n_hids,
+                             self.n_hids,
+                             -1,
+                             self.scale,
+                             rng=self.rng),
+                name="Whh_%s"%self.name)
+
+            self.W_b = theano.shared(
+                numpy.asarray([self.bias_fn(self.n_hids,
+                                            self.scale,
+                                            self.rng)
+                               for i in range(self.max_labels)]),
+                name="Wb_%s"%self.name)
+
+        else: 
+            self.W_hh = theano.shared(
+                self.init_fn(self.n_hids,
+                             self.n_hids,
+                             -1,
+                             self.scale,
+                             rng=self.rng),
+                name="Whh_%s"%self.name)
+            self.W_b = theano.shared(
+                self.bias_fn(self.n_hids,
+                             self.scale,
+                             self.rng),
+                name="Wb_%s"%self.name)
+ 
+        self.params.append(self.W_b)
         self.params.append(self.W_hh)
+
         self.G_hh = theano.shared(
                 self.init_fn(self.n_hids,
                     self.n_hids,
@@ -1658,14 +1687,6 @@ class MultiplicativeRecurrent(Layer):
                                    rng=self.rng),
             name="Rin_%s"%self.name)
         self.params.append(self.R_in)
-        
-        self.W_b = theano.shared(#numpy.asarray([
-            self.bias_fn(self.n_hids,
-                         self.scale,
-                         self.rng)         ,
-            #for i in range(self.max_labels)]),
-            name="Wb_%s"%self.name)
-        self.params.append(self.W_b)
 
         self.G_b = theano.shared(
             self.bias_fn(self.n_hids,
@@ -1711,9 +1732,13 @@ class MultiplicativeRecurrent(Layer):
         :param state_before: the previous value of the hidden state of the
             layer
         """
-
-        W_hh = self.W_hh#[state_below]
-        W_b = self.W_b#[state_below]
+        if self.multiplicative:
+            W_hh = self.W_hh[state_below]
+            W_b = self.W_b[state_below]
+        else:
+            W_hh = self.W_hh
+            W_b = self.W_b
+            
         G_hh = self.G_hh
         R_hh = self.R_hh
         # Reset gate:
@@ -1728,8 +1753,10 @@ class MultiplicativeRecurrent(Layer):
        # W_hh = add_hook("W_hh", W_hh)
        # W_b = add_hook("W_b", W_b)
         
-        #reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
-        reseted_state_before = reseter * TT.dot(state_before, W_hh)
+        if self.multiplicative:
+            reseted_state_before = reseter * TT.batched_dot(state_before, W_hh)
+        else:
+            reseted_state_before = reseter * TT.dot(state_before, W_hh)
         # Feed the input to obtain potential new state.
         preactiv = reseted_state_before + state_in + W_b
 
@@ -1765,7 +1792,7 @@ class MultiplicativeRecurrent(Layer):
         else:
             init_state = TT.alloc(floatX(0), self.n_hids)
 
-        proj = self.W_char[state_below]
+        proj = self.W_emb[state_below]
         state_in =  TT.dot(proj, self.W_in)
         update_in = TT.dot(proj, self.G_in) + self.G_b
         reset_in = TT.dot(proj, self.R_in) + self.R_b
