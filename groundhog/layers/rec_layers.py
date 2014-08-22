@@ -1553,7 +1553,8 @@ class MultiplicativeRecurrent(Layer):
         each input index.
     """
 
-    def __init__(self, rng,
+    def __init__(self, 
+                 rng,
                  n_hids,
                  max_labels,
                  label_dim,
@@ -1812,5 +1813,6 @@ class MultiplicativeRecurrent(Layer):
         if self.return_hidden_layers:
             return self.out
         else:
+            self.out = self.out[-1]
             return self.out
 

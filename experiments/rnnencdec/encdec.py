@@ -1288,6 +1288,7 @@ class Decoder(EncoderDecoderBase):
 class CharEncoder():
 
     def __init__(self, state, rng, prefix='char_enc'):
+        logger.debug("Initializing Char Encoder")
         self.state = state
         self.rng = rng
         self.prefix = prefix
@@ -1299,29 +1300,37 @@ class CharEncoder():
             scale=self.state['weight_scale'])
 
     def create_layers(self):
-        with open(self.state['word_to_char']) as f:
+        if self.state['use_subs']:
+            logger.debug("Using substrings")
+            path = self.state['word_to_subs']
+            max_labels = self.state['sub_labels']
+        else:
+            logger.debug("Using pure character sequence")
+            path = self.state['word_to_chars']
+            max_labels = self.state['char_labels']
+        with open(path) as f:
             matrix = numpy.load(f)
-            self.word_to_chars = theano.shared(matrix, name="%s_WordToChar_"%self.prefix)
-            # self.word_to_chars = theano.shared(
-            #     numpy.asarray([numpy.arange(1, 31) for i in range(200000)]),
-            #     name="%s_WordToChar_"%self.prefix)
+            self.word_to_sequence = theano.shared(matrix, name="%s_WordToChar_"%self.prefix)
 
-        # self.rnn_layer = MultiplicativeRecurrent(
-        #     self.rng,
-        #     self.state['char_n_hids'],
-        #     self.state['char_labels'],
-        #     self.state['char_proj_dim'],
-        #     return_hidden_layers=False,
-        #     name="{}_recurrent".format(self.prefix)
-        # )
+        if self.state['use_char_rnn']:
+            logger.debug("Using rnn for character encoder")
+            self.encoder_layer = MultiplicativeRecurrent(
+                self.rng,
+                self.state['char_n_hids'],
+                max_labels,
+                self.state['char_proj_dim'],
+                return_hidden_layers=False,
+                multiplicative=False,
+                name="{}_recurrent".format(self.prefix))
 
-        
-        self.encoder_layer = BagOfParts(
-            self.rng,
-            max_labels=self.state['char_labels'],
-            label_dim=self.state['char_proj_dim'],
-            n_hids=self.state['char_n_hids'],
-            name="{}_bagofparts".format(self.prefix))
+        else:
+            logger.debug("Using bag of parts for character encoder")
+            self.encoder_layer = BagOfParts(
+                self.rng,
+                max_labels=max_labels,
+                label_dim=self.state['char_proj_dim'],
+                n_hids=self.state['char_n_hids'],
+                name="{}_bagofparts".format(self.prefix))
             
 
         self.expander = MultiLayer(
@@ -1340,7 +1349,7 @@ class CharEncoder():
         #x = dbg_value("x", x)
 
         # Get character arrays for each word
-        chars = self.word_to_chars[x.flatten()]
+        chars = self.word_to_sequence[x.flatten()]
         #flat_x = x.flatten()
         #chars = TT.alloc(23, *(flat_x.shape[0], 30))
 
@@ -1427,7 +1436,7 @@ class CharDecoder():
         batch_size = shape[1]
         n_steps = shape[0]
 
-        z = self.word_to_chars[y.flatten()]
+        z = self.word_to_sequence[y.flatten()]
 
         # Character arrays are padded to 30 chars with -1
         z_mask = chars>-1
@@ -1518,13 +1527,14 @@ class RNNEncoderDecoder(object):
         # Annotation for the log-likelihood computation
         training_c_components = []
 
-        if 'word_to_char' in self.state:
+        if 'word_to_chars' in self.state:
             logger.debug("Create CharEncoder")
             self.char_encoder = CharEncoder(self.state, self.rng, prefix="charenc")
             self.char_encoder.create_layers()
 
             logger.debug("Build char encoding computational graph")
-            character_embeddings = self.char_encoder.build_char_encoder(self.x, self.x_mask)
+            self.character_embeddings = self.char_encoder.build_char_encoder(self.x, self.x_mask)
+            print "TYPE OF CHAR_EMB", type(self.character_embeddings)
 
         logger.debug("Create encoder")
         self.encoder = Encoder(self.state, self.rng,
@@ -1533,11 +1543,11 @@ class RNNEncoderDecoder(object):
         self.encoder.create_layers()
 
         logger.debug("Build encoding computation graph")
-        if 'word_to_char' in self.state:
+        if 'word_to_chars' in self.state:
             forward_training_c = self.encoder.build_encoder(
                 self.x, self.x_mask,
                 use_noise=True,
-                approx_embeddings = character_embeddings,
+                approx_embeddings = self.character_embeddings,
                 return_hidden_layers=True)
         else:
             forward_training_c = self.encoder.build_encoder(
@@ -1719,6 +1729,14 @@ class RNNEncoderDecoder(object):
             else:
                 return probs
         return probs_computer
+
+    def create_char_encoder(self):
+        fn = theano.function([self.x], self.character_embeddings.fprop(self.x))
+        #fn = self.character_embeddings.fprop
+        def char_encoder(word_index):
+            x = numpy.asarray([numpy.asarray([word_index])])
+            return fn(x)
+        return char_encoder
 
 def parse_input(state, word2idx, line, raise_unk=False, idx2word=None):
     seqin = line.split()
