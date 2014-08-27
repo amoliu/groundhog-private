@@ -26,6 +26,7 @@ from groundhog.utils import sample_weights, \
 from basic import Layer
 
 logger = logging.getLogger(__name__)
+
 class MultiLayer(Layer):
     """
     Implementing a standard feed forward MLP
@@ -527,7 +528,7 @@ class BagOfParts(Layer):
         each index, sums the projection, and passes the result though an mlp
         layer.
     """
-    
+
     def __init__(self,
                  rng,
                  max_labels,
@@ -553,13 +554,13 @@ class BagOfParts(Layer):
         :type n_hids: int
         :param n_hids: Number of hidden units
 
-        :type activation: string/function 
-        :param activation: Activation function for the embedding layers. 
+        :type activation: string/function
+        :param activation: Activation function for the embedding layers.
 
         :type scale: float
         :param scale: depending on the initialization function, it can be
             the standard deviation of the Gaussian from which the weights
-            are sampled or the largest singular value. 
+            are sampled or the largest singular value.
 
         :type sparsity: int
         :param sparsity: If negative, it means the weight matrix is dense. Otherwise it
@@ -634,10 +635,10 @@ class BagOfParts(Layer):
         self.params_grad_scale = [self.grad_scale for x in self.params]
 
     def fprop(self, state_below, mask=None):
-        proj = self.W_emb[state_below] 
+        proj = self.W_emb[state_below]
 
         proj = TT.sum(proj, axis=1)
-        
+
         rval = self.activation(TT.dot(proj, self.W_h) + self.bias)
         self.out =  rval
         return self.out

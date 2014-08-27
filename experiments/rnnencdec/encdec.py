@@ -764,7 +764,7 @@ class Encoder(EncoderDecoderBase):
         #   (seq_len, rank_n_approx)
         if not approx_embeddings:
             approx_embeddings = self.approx_embedder(x)
-       
+
         # approx_embeddings = dbg_hook(partial(hid_hook, msg="embeddings"), approx_embeddings)
 
         # Low rank embeddings are projected to contribute
@@ -1300,14 +1300,8 @@ class CharEncoder():
             scale=self.state['weight_scale'])
 
     def create_layers(self):
-        if self.state['use_subs']:
-            logger.debug("Using substrings")
-            path = self.state['word_to_subs']
-            max_labels = self.state['sub_labels']
-        else:
-            logger.debug("Using pure character sequence")
-            path = self.state['word_to_chars']
-            max_labels = self.state['char_labels']
+        path = self.state['word_to_chars']
+        max_labels = self.state['char_labels']
         with open(path) as f:
             matrix = numpy.load(f)
             self.word_to_sequence = theano.shared(matrix, name="%s_WordToChar_"%self.prefix)
@@ -1322,7 +1316,6 @@ class CharEncoder():
                 return_hidden_layers=False,
                 multiplicative=False,
                 name="{}_recurrent".format(self.prefix))
-
         else:
             logger.debug("Using bag of parts for character encoder")
             self.encoder_layer = BagOfParts(
@@ -1331,7 +1324,6 @@ class CharEncoder():
                 label_dim=self.state['char_proj_dim'],
                 n_hids=self.state['char_n_hids'],
                 name="{}_bagofparts".format(self.prefix))
-            
 
         self.expander = MultiLayer(
             self.rng,
@@ -1369,144 +1361,11 @@ class CharEncoder():
         #chars_mask = dbg_shape("chars no splice", chars_mask)
 
         #chars = dbg_shape("chars post slice", chars)
-                
+
         char_embeds = self.expander(self.encoder_layer(chars, chars_mask)) #[-1])
         #char_embeds = self.rnn_layer(chars, chars_mask)[-1]
         char_embeds = char_embeds.reshape((n_steps, batch_size, char_embeds.shape[1]))
         return char_embeds
-        
-class CharDecoder():
-
-    def __init__(self, state, rng, prefix='char_enc'):
-        self.state = state
-        self.rng = rng
-        self.prefix = prefix
-        self.weight_kwargs = dict(
-            sparsity = -1,
-            scale = self.state['weight_scale'],
-            rng=self.rng)
-        self.bias_kwargs = dict(
-            scale = self.state['weight_scale'],
-            rng=self.rng)
-
-    def create_layers(self):
-        """
-        """
-        # Need to allocate weight matrices, self.n_hids
-        self.W_ch = sample_weights_classic(self.state['rank_n_approx'],
-                                           self.n_hids, 
-                                           **self.weight_kwargs)
-        self.b_h = init_bias(self.n_hids, **self.bias_kwargs)
-
-        self.W_cz = sample_weights_classic(self.state['rank_n_approx'],
-                                           self.outdim, 
-                                           **self.weight_kwargs)
-        self.b_z = init_bias(self.outdim, **self.bias_kwargs)
-
-        self.W_hh = sample_weights_classic(self.n_hids,
-                                           self.n_hids, 
-                                           **self.weight_kwargs)
-        self.b_h = init_bias(self.n_hids, **self.bias_kwargs)
-
-        self.W_hz = sample_weights_classic(self.n_hids,
-                                           self.outdim,
-                                           **self.weight_kwargs)
-
-        self.W_zh = sample_weights_classic(self.outdim,
-                                           self.n_hids, 
-                                           **self.weight_kwargs)
-
-    def build_evaluator(self, c, y):
-        """
-        Builds a computation graph, that given the representation c and words y computes
-        the probabilities of generating y.
-
-        :param c:
-            representation, expected shape: (batch_size, rank_n_approx)
-
-        :param y:
-            target words, expected shape: (batch_size,)
-
-        :returns:
-            log-likelihood of the words y: (batch_size,)
-        """
-        # Stage 1 - build z and z_mask from y
-        # Get character arrays for each word
-        shape = y.shape
-        batch_size = shape[1]
-        n_steps = shape[0]
-
-        z = self.word_to_sequence[y.flatten()]
-
-        # Character arrays are padded to 30 chars with -1
-        z_mask = chars>-1
-
-        # Remove the columns that only contain padding
-        splice_cols = TT.any(z_mask, axis=0)
-        z = z[:,splice_cols]
-        z_mask = z_mask[:,splice_cols]
-        
-        # Stage 2 - scan with build_decoder_step
-        h0 = TT.alloc(floatX(0), batch_size, self.n_hids)
-        sequences = [z, z_mask]
-        non_sequences = [c]
-        fn = lambda z, z_mask, h, c : self.build_decoder_step(c, h, z=z, z_mask=z_mask)
-        rval, updates = theano.scan(fn, sequences=sequences, outputs_info=[h0], non_sequences=non_sequences)
-        
-
-    def build_sequence_sampler(self, c, n_steps):
-        """
-        Builds a computation graph, that given the representation c
-        generates a sample (a sequence)
-
-        :param c:
-            representation, expected shape: (batch_size, rank_n_approx)
-
-        :n_steps:
-            number of steps, scalar
-
-        :returns:
-            matrix of sampled characters (batch_size, n_steps)
-        """
-        fn = lambda h, c: seld.build_decoder_step(c, h)
-        outputs = [c]
-        non_sequences = [c]
-        rval, updates = theano.scan(fn, outputs_info=outputs, non_sequences=non_sequences)
-        
-        # Scan with build_decoder_step
-
-    def build_decoder_step(self, c, h, z=None, z_mask=None):
-        """
-        Build a computation graph of a decoder step,
-
-        :param c:
-            (batch_size, dim) - representations of source sequences
-
-        :param h:
-            (batch_size, dim) - previous hidden states
-
-        :param z:
-            None if used for sampling
-            (batch_size,) - the characters, whose emission probability we want to estimate if evaluating
-
-        :param z_mask:
-            None if used for sampling
-            (batch_size,) - the 0/1 matrix specifying position of actual characters (not padding)
-
-        :returns:
-            [(batch_size, dim) - next hidden states,
-             (batch_size,) - the generated characters (or z if given),
-             (batch_size,) - the log-probabilities of the generated characters (or oz if given)]
-        """
-        # Stage 1 - generate the next character (if sampling)
-        # Softmax of this?
-        if z is None:
-            next_z = utils.dot(c, self.W_cz) + utils.dot(h, self.W_hz) + self.b_z
-
-        # Stage 2 - compute the next hidden state
-        next_h = utils.dot(c, self.W_ch) + utils.dot(h, self.W_hh) + self.b_h
-        
-
 
 class RNNEncoderDecoder(object):
 
