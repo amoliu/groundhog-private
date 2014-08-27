@@ -88,7 +88,7 @@ def create_sequences(ivocab, char_sub_dict, max_word_len):
             word = word[:max_word_len]
         assert len(word) == max_word_len, "word is only %d chars"%len(word)
 
-        words.append(np.asarray(word, dtype=np.int16))
+        words.append(np.asarray(word, dtype=np.int32))
 
     npwords = np.asarray(words)
     return npwords
