@@ -179,7 +179,6 @@ def get_batch_iterator(state, rng):
         source_file=state['source'][0],
         can_fit=False,
         queue_size=1000,
-        cache_size=state['cache_size'],
         shuffle=state['shuffle'],
         use_infinite_loop=state['use_infinite_loop'],
         max_len=state['seqlen'])
@@ -901,7 +900,6 @@ class Decoder(EncoderDecoderBase):
         readout_kwargs.update(dict(
                 n_hids=self.state['dim'],
                 activation='lambda x: x',
-                bias_scale=[self.state['bias_mlp']/3],
             ))
 
         self.repr_readout = MultiLayer(
@@ -928,7 +926,6 @@ class Decoder(EncoderDecoderBase):
                 n_in=self.state['rank_n_approx'],
                 n_hids=self.state['dim'],
                 activation=['lambda x:x'],
-                bias_scale=[self.state['bias_mlp']/3],
                 learn_bias=False,
                 name='{}_prev_readout_{}'.format(self.prefix, level),
                 **self.default_kwargs)
@@ -1259,10 +1256,33 @@ class Decoder(EncoderDecoderBase):
                 given_init_states=init_states, step_num=step_num)[2:]
 
 class RNNEncoderDecoder(object):
+    """This class encapsulates the translation model.
+
+    The expected usage pattern is:
+    >>> encdec = RNNEncoderDecoder(...)
+    >>> encdec.build(...)
+    >>> useful_smth = encdec.create_useful_smth(...)
+
+    Functions from the create_smth family (except create_lm_model)
+    when called complile and return functions that do useful stuff.
+    """
 
     def __init__(self, state, rng,
             skip_init=False,
             compute_alignment=False):
+        """Constructor.
+
+        :param state:
+            A state in the usual groundhog sense.
+        :param rng:
+            Random number generator. Something like numpy.random.RandomState(seed).
+        :param skip_init:
+            If True, all the layers are initialized with zeros. Saves time spent on
+            parameter initialization if they are loaded later anyway.
+        :param compute_alignment:
+            If True, the alignment is returned by the decoder.
+        """
+
         self.state = state
         self.rng = rng
         self.skip_init = skip_init
