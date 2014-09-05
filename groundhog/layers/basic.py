@@ -474,7 +474,8 @@ class Layer(Container):
             del kwargs['one_step']
         new_obj.prev_args = (args, kwargs)
         if kind == 'fprop':
-            assert 'out' not in self.__dict__
+            #This actually happens in beam search!
+            #assert 'out' not in self.__dict__
             new_obj.fprop(*args, **kwargs)
         elif kind == 'eval':
             new_obj.get_cost(*args, **kwargs)
