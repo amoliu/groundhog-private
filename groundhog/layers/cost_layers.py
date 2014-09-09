@@ -19,8 +19,9 @@ from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 
 from groundhog import utils
 from groundhog.utils import sample_weights, sample_weights_classic,\
-    init_bias, constant_shape, sample_zeros
+    init_bias, constant_shape, sample_zeros, dbg_hook
 
+from ff_layers import Concatenate
 from basic import Layer
 
 logger = logging.getLogger(__name__)
@@ -1159,3 +1160,83 @@ class SoftmaxLayer(CostLayer):
         self.mask = mask
         self.cost_scale = scale
         return self.cost
+
+class BagOfPartsSoftmaxLayer(SoftmaxLayer):
+    """
+    A layer that converts multidimensional real-valued representation
+    (called readout) to a probability distribution over output words based on
+    given bag-of-parts representations of the words.
+    """
+
+    def __init__(self, rng,
+            word_parts_path,
+            n_in,
+            n_out,
+            name,
+            init_fn="sample_weights_classic",
+            scale=0.01):
+        """
+        The constructor.
+
+        :param rng:
+            Random number generator to initialize part embeddings.
+
+        :param word_parts_path:
+            Path to the dictionary of word parts.
+        """
+
+        self.word_parts = numpy.load(open(word_parts_path))
+        self.word_parts = self.word_parts[:n_out]
+        self.n_parts_in_word = self.word_parts.shape[1]
+        self.n_parts = self.word_parts.max() + 1
+
+        # Don't call SoftmaxLayer.__init__ !!!
+        CostLayer.__init__(self, rng, n_in, n_out, 0.001, -1,
+                name=name, init_fn=init_fn)
+
+    def _init_params(self):
+        self.word_parts = theano.shared(self.word_parts)
+        self.W_parts = self.init_fn(self.n_in + 1, self.n_parts, -1, self.scale, self.rng)
+        self.W_parts[:, 0] = 0
+        self.W_parts = theano.shared(self.W_parts, name="W_{}".format(self.name))
+
+        self.params = [self.W_parts]
+        self.params_grad_scale = [1.0]
+
+    def fprop(self, r,
+            temp=None, use_noise=None, additional_inputs=None,
+            no_noise_bias=None):
+        """Computes probabilities of output words given readout vectors.
+
+        :param r:
+            Readout vectors.
+            Shape: (seq_len * batch_size, rdim)
+        """
+
+        # Add additional ones for bias.
+        # r = dbg_hook(lambda _, x : logger.debug("r shape before " + str(x.shape)), r)
+        r = Concatenate(axis=1)(r, TT.ones((r.shape[0], 1), dtype="float32")).out
+        # r = dbg_hook(lambda _, x : logger.debug("r shape after " + str(x.shape)), r)
+
+        def func(_, x):
+            import ipdb; ipdb.set_trace()
+
+        W_words = self.W_parts[:, self.word_parts].sum(axis=2)
+        # W_words = dbg_hook(func, W_words)
+
+        # Expected shape: (seq_len * batch_size, n_words)
+        # r = dbg_hook(func, r)
+        word_energies = TT.dot(r, W_words)
+        # word_energies = dbg_hook(func, word_energies)
+        word_unnorm_probs = TT.exp(word_energies)
+        word_unnorm_prob_sums = word_unnorm_probs.sum(axis=1).reshape((
+                word_unnorm_probs.shape[0], 1))
+        # word_unnorm_prob_sums = dbg_hook(func, word_unnorm_prob_sums)
+        word_probs = word_unnorm_probs / word_unnorm_prob_sums
+
+        # Have no idea why it is done
+        self.state_below = r
+
+        self.out = word_probs
+        self.out = dbg_hook(func, self.out)
+        return self.out

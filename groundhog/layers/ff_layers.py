@@ -15,6 +15,7 @@ import copy
 import theano
 import theano.tensor as TT
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+import theano.printing as TP
 
 from groundhog import utils
 from groundhog.utils import sample_weights, \
@@ -508,4 +509,127 @@ class Concatenate(Layer):
 
     def fprop(self, *args):
         self.out = TT.concatenate(args, axis=self.axis)
+        return self.out
+
+class BagOfPartsEmbedder(Layer):
+    """ A layer that takes a sequence of indices, retrieves a projection for
+        each index, sums the projection, and passes the result though an mlp
+        layer.
+
+        TODO: rewrite the comments
+    """
+
+    def __init__(self,
+                 rng,
+                 word_parts_path,
+                 n_hids=500,
+                 activation='TT.tanh',
+                 scale=0.01,
+                 sparsity=-1,
+                 init_fn='sample_weights_classic',
+                 bias_fn='init_bias',
+                 bias_scale=0.,
+                 name=None):
+        """
+        :type rng: numpy random generator
+        :param rng: numpy random generator
+
+        :type max_labels: int
+        :param max_labels: The highest index that can be input
+
+        :type label_dim: int
+        :param label_dim: The dimension of the projections
+
+        :type n_hids: int
+        :param n_hids: Number of hidden units
+
+        :type activation: string/function
+        :param activation: Activation function for the embedding layers.
+
+        :type scale: float
+        :param scale: depending on the initialization function, it can be
+            the standard deviation of the Gaussian from which the weights
+            are sampled or the largest singular value.
+
+        :type sparsity: int
+        :param sparsity: If negative, it means the weight matrix is dense. Otherwise it
+            means this many randomly selected input units are connected to
+            an output unit
+
+        :type init_fn: string or function
+        :param init_fn: function used to initialize the weights of the
+            layer. We recommend using either `sample_weights_classic` or
+            `sample_weights` defined in the utils
+
+        :type bias_fn: string or function
+        :param bias_fn: function used to initialize the biases. We recommend
+            using `init_bias` defined in the utils
+
+        :type bias_scale: float
+        :param bias_scale: argument passed to `bias_fn`, depicting the scale
+            of the initial bias
+
+        :type name: string
+        :param name: name of the layer (used to name parameters). NB: in
+            this library names are very important because certain parts of the
+            code relies on name to disambiguate between variables, therefore
+            each layer should have a unique name.
+        """
+        if type(init_fn) is str or type(init_fn) is unicode:
+            init_fn = eval(init_fn)
+        if type(bias_fn) is str or type(bias_fn) is unicode:
+            bias_fn = eval(bias_fn)
+        if type(activation) is str or type(activation) is unicode:
+            activation = eval(activation)
+
+        self.grad_scale = 1
+        self.rng = rng
+        self.n_hids = n_hids
+        self.bias_scale = bias_scale
+        self.bias_fn = bias_fn
+        self.activation = activation
+        self.init_fn = init_fn
+        self.scale = scale
+        self.sparsity = sparsity
+        self.word_parts_path = word_parts_path
+        super(BagOfPartsEmbedder, self).__init__(self.n_hids, self.n_hids, rng, name)
+
+        self._init_params()
+
+    def _init_params(self):
+        self.word_parts = theano.shared(
+                numpy.load(self.word_parts_path))
+        self.max_labels = self.word_parts.get_value().max() + 1
+
+        preW_emb = self.init_fn(self.max_labels,
+                self.n_hids,
+                -1,
+                self.scale,
+                rng=self.rng)
+        preW_emb[0] = numpy.zeros(self.n_hids)
+        self.W_emb = theano.shared(preW_emb, name="W_emb_%s"%self.name)
+        self.W_h = theano.shared(
+            self.init_fn(self.n_hids,
+                         self.n_hids,
+                         self.sparsity,
+                         self.scale,
+                         rng=self.rng),
+            name="W_hidden_%s"%self.name)
+        self.bias = theano.shared(
+            self.bias_fn(self.n_hids,
+                         self.scale,
+                         self.rng),
+            name="bias_%s"%self.name)
+
+        self.params = [self.W_emb, self.W_h, self.bias]
+        self.params_grad_scale = [self.grad_scale for x in self.params]
+
+    def fprop(self, state_below, mask=None):
+        parts = self.word_parts[state_below]
+
+        proj = self.W_emb[parts]
+        proj = TT.sum(proj, axis=proj.ndim - 2)
+
+        rval = self.activation(TT.dot(proj, self.W_h) + self.bias)
+        self.out = rval
         return self.out

@@ -20,7 +20,9 @@ from groundhog.layers import\
         Shift,\
         LastState,\
         DropOp,\
-        Concatenate
+        Concatenate,\
+        BagOfPartsEmbedder,\
+        BagOfPartsSoftmaxLayer
 from groundhog.models import LM_Model
 from groundhog.datasets import PytablesBitextIterator
 from groundhog.utils import sample_zeros, sample_weights_orth, init_bias, sample_weights_classic
@@ -565,15 +567,26 @@ class EncoderDecoderBase(object):
 
     def _create_embedding_layers(self):
         logger.debug("_create_embedding_layers")
-        self.approx_embedder = MultiLayer(
-            self.rng,
-            n_in=self.state['n_sym_source']
-                if self.prefix.find("enc") >= 0
-                else self.state['n_sym_target'],
-            n_hids=[self.state['rank_n_approx']],
-            activation=[self.state['rank_n_activ']],
-            name='{}_approx_embdr'.format(self.prefix),
-            **self.default_kwargs)
+
+        key = 'word_parts_src' if self.prefix.find("enc") >= 0 else 'word_parts_trg'
+        if key in self.state:
+            self.approx_embedder = BagOfPartsEmbedder(
+                    self.rng,
+                    word_parts_path=self.state[key],
+                    n_hids=self.state['rank_n_approx'],
+                    name='{}_bag_embdr'.format(self.prefix),
+                    init_fn=self.state['weight_init_fn'],
+                    scale=self.state['weight_scale'])
+        else:
+            self.approx_embedder = MultiLayer(
+                self.rng,
+                n_in=self.state['n_sym_source']
+                    if self.prefix.find("enc") >= 0
+                    else self.state['n_sym_target'],
+                n_hids=[self.state['rank_n_approx']],
+                activation=[self.state['rank_n_activ']],
+                name='{}_approx_embdr'.format(self.prefix),
+                **self.default_kwargs)
 
         # We have 3 embeddings for each word in each level,
         # the one used as input,
@@ -934,15 +947,25 @@ class Decoder(EncoderDecoderBase):
             act_layer = UnaryOp(activation=eval(self.state['unary_activ']))
             drop_layer = DropOp(rng=self.rng, dropout=self.state['dropout'])
             self.output_nonlinearities = [act_layer, drop_layer]
-            self.output_layer = SoftmaxLayer(
-                    self.rng,
-                    self.state['dim'] / self.state['maxout_part'],
-                    self.state['n_sym_target'],
-                    sparsity=-1,
-                    rank_n_approx=self.state['rank_n_approx'],
-                    name='{}_deep_softmax'.format(self.prefix),
-                    use_nce=self.state['use_nce'] if 'use_nce' in self.state else False,
-                    **self.default_kwargs)
+            if 'word_parts_trg' in self.state:
+                self.output_layer = BagOfPartsSoftmaxLayer(
+                        self.rng,
+                        self.state['word_parts_trg'],
+                        n_in=self.state['dim'] / self.state['maxout_part'],
+                        n_out=self.state['n_sym_target'],
+                        init_fn=self.state['weight_init_fn'],
+                        scale=self.state['weight_scale'],
+                        name='{}_bag_softmax'.format(self.prefix))
+            else:
+                self.output_layer = SoftmaxLayer(
+                        self.rng,
+                        self.state['dim'] / self.state['maxout_part'],
+                        self.state['n_sym_target'],
+                        sparsity=-1,
+                        rank_n_approx=self.state['rank_n_approx'],
+                        name='{}_deep_softmax'.format(self.prefix),
+                        use_nce=self.state['use_nce'] if 'use_nce' in self.state else False,
+                        **self.default_kwargs)
         else:
             self.output_nonlinearities = []
             self.output_layer = SoftmaxLayer(
@@ -1187,7 +1210,6 @@ class Decoder(EncoderDecoderBase):
                     alignment)
         else:
             raise Exception("Unknown mode for build_decoder")
-
 
     def sampling_step(self, *args):
         """Implements one step of sampling
